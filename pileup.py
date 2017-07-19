@@ -50,6 +50,7 @@ def make_pileup_rgb(readname, matches, reads_df, start, end, limit):
 
 	# select the reads that cover at least half of the window
 	matches = matches[((matches[2]-start).clip(0,None) + (end-matches[3]).clip(0,None))  < (float(end-start)/2.0)]
+	matches = matches.head(limit)
 
 	for match in matches.iterrows():
 		match = match[1]
@@ -87,14 +88,7 @@ def main():
 	cur_chunk, chunksize, pileups = pd.DataFrame({}), 1000, []
 	for chunk in pd.read_table(args.mapping, sep='\t', compression='gzip', chunksize=chunksize, header=None):
 		if args.limit_fastq > 0:
-			removelist = []
-			for i in range(chunksize):
-				if chunk.iloc[i][5] not in reads_list:
-					removelist.append(i)
-			removelist = sorted(removelist, reverse=True)
-			for i in range(len(removelist)):
-				chunk = chunk.drop(chunk.index[removelist[i]])
-
+			chunk = chunk.loc[chunk[5].isin(reads_list)]
 			if chunk.empty:
 				continue
 
