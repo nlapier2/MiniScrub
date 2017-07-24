@@ -1,4 +1,4 @@
-import argparse, gzip, sys
+import argparse, gzip, multiprocessing, sys
 import numpy as np
 import matplotlib
 matplotlib.use('agg')
@@ -8,20 +8,25 @@ import pandas as pd
 
 def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Create pileups from .paf read-to-read mapping and fastq reads.')
+	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
 	parser.add_argument('--limit_fastq', type=int, default=0, help='Limit number of reads to scan from fastq file.')
 	parser.add_argument('--limit_matches', type=int, default=0, help='Limit number of best matches kept per read.')
 	parser.add_argument('--limit_reads', type=int, default=0, help='Limit number of reads to generate pileups for.')
 	parser.add_argument('--mapping', required=True, help='Path to the .paf file of read-to-read mappings.')
+	parser.add_argument('--processes', type=int, default=1, help='Number of multiple processes to run concurrently.')
 	parser.add_argument('--reads', required=True, help='Path to the .fastq reads file.')
 	parser.add_argument('--saveplots', action='store_true', help='If used, will plot the pileups and save them.')
 	args = parser.parse_args()
 	return args
 
 
-def process_reads(reads, limit):  # using fastq file, create dict mapping read names to sequence and quality scores
-	reads_file = gzip.open(reads, "r")
+def process_reads(reads, compression, limit):  # using fastq file, create dict mapping read names to sequence and quality scores
+	if compression == 'gzip':
+		reads_file = gzip.open(reads, 'r')
+	else:
+		reads_file = open(reads, 'r')
 	reads_df, num, current = {}, -1, ''
-	count = 0
+	read_count = 0
 	for line in reads_file:
 		line = line.strip()
 		num = (num + 1) % 4
@@ -29,23 +34,24 @@ def process_reads(reads, limit):  # using fastq file, create dict mapping read n
 			current = line[1:].split(' ')[0]
 		elif num == 1:
 			reads_df[current] = [line.upper()]
-			count += 1
+			read_count += 1
 		elif num == 3:
 			#scores = [int((ord(ch)-33)*2.75) for ch in line]
 			scores = [(ord(ch)-33) for ch in line]
 			reads_df[current].append(scores)
 			reads_df[current].append(np.mean(scores))
-			if limit > 0 and count > limit:
+			if limit > 0 and read_count > limit:
 				break
 	reads_file.close()
 	reads_df = pd.DataFrame(reads_df)
 	return reads_df
 
 
-def make_pileup_rgb(readname, matches, reads_df, start, end, limit):
-	pileup, pixel = [], [100.0, np.mean(reads_df[readname][1]), 100.0]
-	seq = [pixel for i in range(min(end,len(reads_df[readname][0]))-start)]
-	maxlen, minend, querylen = len(seq), end, len(seq)
+def make_pileup_rgb(pid, readqual, readlen, matches, limit, plot_opt):
+	return str(pid) + ' done'
+	pileup, pixel = [], [100.0, readqual, 100.0]
+	seq = [pixel for i in range(min(end,readlen)-start)]
+	maxlen, total, avgdepth, cutoff = len(seq), 0, 20, 10
 	pileup.append(seq)
 
 	# select the reads that cover at least half of the window
@@ -54,15 +60,12 @@ def make_pileup_rgb(readname, matches, reads_df, start, end, limit):
 
 	for match in matches.iterrows():
 		match = match[1]
-		if match[0] != readname:
-			continue
 		prefix = [[0.0,0.0,0.0] for i in range(int(match[2])-start)]
 		r = match['match_pct']
-		g = reads_df[match[5]][2] #np.mean(reads_df[match[5]][1])
-		b = ((match[3] - match[2]) / (match[8] - match[7])) * 100.0
-		#r = match['match_pct']
-		#g = match['green']
-		#b = match['blue']
+		#g = reads_df[match[5]][2] #np.mean(reads_df[match[5]][1])
+		#b = ((match[3] - match[2]) / (match[8] - match[7])) * 100.0
+		g = match['green']
+		b = match['blue']
 		seq = prefix + [[r,g,b] for i in range(min(end,int(match[3]))-start-len(prefix))]
 		pileup.append(seq)
 		if len(seq) > maxlen:
@@ -77,7 +80,10 @@ def make_pileup_rgb(readname, matches, reads_df, start, end, limit):
 	for line in range(len(pileup)):
 		pileup[line].extend([[0.0,0.0,0.0] for i in range(maxlen - len(pileup[line]))])
 
-	return np.array(pileup), minend
+	if plot_opt:  # will have to modify to use different windows
+		saveplots_rgb(pileup, name)
+	#return np.array(pileup), minend
+	return 0
 
 
 def saveplots_rgb(pileups):
@@ -87,79 +93,53 @@ def saveplots_rgb(pileups):
 
 
 def main():
-	count, window_size = 0, 200
 	args = parse_args()
-	reads_df = process_reads(args.reads, args.limit_fastq)
+	read_count, line_count, window_size = 0, 0, 200
+	reads_df = process_reads(args.reads, args.compression, args.limit_fastq)
 	reads_list = list(reads_df)
+	pool = multiprocessing.Pool(processes=args.processes)
 
-	cur_chunk, chunksize, pileups = pd.DataFrame({}), 1000, []
-	for chunk in pd.read_table(args.mapping, sep='\t', compression='gzip', chunksize=chunksize, header=None):
-		if args.limit_fastq > 0:
-			chunk = chunk.loc[chunk[5].isin(reads_list)]
-			if chunk.empty:
-				continue
-
-		chunk['match_pct'] = chunk[9] / chunk[10] * 100.0
-		cur_chunk = pd.concat([cur_chunk, chunk])
-		cur_chunk = cur_chunk.sort_values('match_pct', ascending=False)
-		queries = cur_chunk[0].unique()
-		for cur_read in queries:
-			if cur_read == cur_chunk.iloc[-1][0]:
+	#'''
+	read_data, cur_read = {}, ''
+	if args.compression == 'gzip':
+		f = gzip.open(args.mapping, 'r')
+	else:
+		f = open(args.mapping, 'r')
+	for line in f:
+		splits = line.strip().split('\t')
+		for i in (1,2,3,6,7,8,9,10,11):
+			splits[i] = float(splits[i])
+		if args.limit_fastq > 0 and (splits[0] not in reads_list or splits[5] not in reads_list):
+			continue
+		if read_data != {} and cur_read != splits[0]:
+			cur_chunk = pd.DataFrame.from_dict(read_data, orient='index')
+			cur_chunk['match_pct'] = cur_chunk[9] / cur_chunk[10] * 100.0
+			cur_chunk['green'] = reads_df[cur_chunk[5]].iloc[2]
+			cur_chunk['blue'] = ((cur_chunk[3] - cur_chunk[2]) / (cur_chunk[8] - cur_chunk[7])) * 100.0
+			#cur_chunk = cur_chunk.sort_values('match_pct', ascending=False)
+			res = pool.apply_async(make_pileup_rgb, (read_count, reads_df[cur_read][2], len(reads_df[cur_read][0]), cur_chunk, args.limit_matches, args.saveplots))
+			#print res
+			read_count += 1
+			if read_count % 10 == 0:
+				print read_count
+			if read_count == args.limit_reads:
 				break
-			start = window_size
-			while start + (window_size*2) < len(reads_df[cur_read][0]):  # make pileup images for different parts of read
-				pileup, minend = make_pileup_rgb(cur_read, cur_chunk, reads_df, start, start+window_size, args.limit_matches)
-				pileups.append([pileup, cur_read+'_'+str(start)])
-				while start + (window_size * 1.5) <= minend:  # if we would re-select same target reads, append same pileup
-					start += window_size
-					pileups.append([pileup, cur_read+'_'+str(start)])
-				start += window_size
-			count += 1
-			if count == args.limit_reads:
-				break
-		if count == args.limit_reads:
-			break
-		cur_chunk = cur_chunk[cur_chunk[0] == cur_read]
+			read_data, line_count = {}, 0
+		#read_data[line_count] = splits
+		cur_read = splits[0]
+		if splits[5] not in read_data:
+			read_data[splits[5]] = splits
+		else:
+			prev_match = read_data[splits[5]]
+			prev_pct = prev_match[9] / prev_match[10]
+			if (splits[9] / splits[10]) > prev_pct:
+				read_data[splits[5]] = splits
+		line_count += 1
+	f.close()
 
-		'''
-		cur_read = cur_chunk.iloc[0][0]
-		while cur_chunk.iloc[0][0] != cur_chunk.iloc[-1][0]:
-			read_data = cur_chunk[cur_chunk[0] == cur_read]  # split off the data for one read
-			cur_chunk = cur_chunk[cur_chunk[0] != cur_read]
-			#read_data = cur_chunk
-			read_data['match_pct'] = read_data[9] / read_data[10] * 100.0
-			#read_data['green'] = reads_df[read_data[5]].iloc[1].apply(lambda x: np.mean(x[1]))
-			#read_data['blue'] = ((read_data[3] - read_data[2]) / (read_data[8] - read_data[7])) * 100.0
-			read_data = read_data.sort_values('match_pct', ascending=False)
-			start = window_size
-			while start + (window_size*2) < len(reads_df[cur_read][0]):  # make pileup images for different parts of read
-				pileups.append([make_pileup_rgb(cur_read, read_data, reads_df, start, start+window_size, args.limit_matches), cur_read+'_'+str(start)])
-				start += window_size
-			count += 1
-			if count == args.limit_reads:
-				break
-			cur_read = cur_chunk.iloc[0][0]
-		if count == args.limit_reads:
-			break
-		start = window_size
-		'''
-
-	# process last read now
-	if count != args.limit_reads:
-		cur_chunk = cur_chunk
-		#read_data['match_pct'] = read_data[9] / read_data[10]
-		cur_chunk = cur_chunk.sort_values('match_pct', ascending=False)
-		start = window_size
-		while start + (window_size*2) < len(reads_df[cur_read][0]):
-			pileup, minend = make_pileup_rgb(cur_read, cur_chunk, reads_df, start, start+window_size, args.limit_matches)
-			pileups.append([pileup, cur_read+'_'+str(start)])
-			while start + (window_size * 1.5) <= minend:  # if we would re-select same target reads, append same pileup
-				start += window_size
-				pileups.append([pileup, cur_read+'_'+str(start)])
-			start += window_size
-
-	if args.saveplots:
-		saveplots_rgb(pileups)
+	print 'done'
+	pool.close()
+	pool.join()
 
 
 if __name__ == "__main__":
