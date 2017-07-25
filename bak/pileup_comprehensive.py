@@ -44,7 +44,8 @@ def process_reads(reads, limit):  # using fastq file, create dict mapping read n
 
 def make_pileup_rgb(readname, matches, reads_df, start, end, limit):
 	pileup, pixel = [], [100.0, np.mean(reads_df[readname][1]), 100.0]
-	seq = [pixel for i in range(min(end,len(reads_df[readname][0]))-start)]
+	#seq = [pixel for i in range(min(end,len(reads_df[readname][0]))-start)]
+	seq = [pixel] * (min(end,len(reads_df[readname][0]))-start)
 	maxlen, minend, querylen = len(seq), end, len(seq)
 	pileup.append(seq)
 
@@ -56,14 +57,16 @@ def make_pileup_rgb(readname, matches, reads_df, start, end, limit):
 		match = match[1]
 		if match[0] != readname:
 			continue
-		prefix = [[0.0,0.0,0.0] for i in range(int(match[2])-start)]
+		#prefix = [[0.0,0.0,0.0] for i in range(int(match[2])-start)]
+		prefix = [[0.0,0.0,0.0]] * (int(match[2])-start)
 		r = match['match_pct']
 		g = reads_df[match[5]][2] #np.mean(reads_df[match[5]][1])
 		b = ((match[3] - match[2]) / (match[8] - match[7])) * 100.0
 		#r = match['match_pct']
 		#g = match['green']
 		#b = match['blue']
-		seq = prefix + [[r,g,b] for i in range(min(end,int(match[3]))-start-len(prefix))]
+		#seq = prefix + [[r,g,b] for i in range(min(end,int(match[3]))-start-len(prefix))]
+		seq = prefix = [[r,g,b]] * (min(end,int(match[3]))-start-len(prefix))
 		pileup.append(seq)
 		if len(seq) > maxlen:
 			maxlen = len(seq)
@@ -75,7 +78,8 @@ def make_pileup_rgb(readname, matches, reads_df, start, end, limit):
 	while len(pileup) < limit:
 		pileup.append([[0.0,0.0,0.0]])
 	for line in range(len(pileup)):
-		pileup[line].extend([[0.0,0.0,0.0] for i in range(maxlen - len(pileup[line]))])
+		#pileup[line].extend([[0.0,0.0,0.0] for i in range(maxlen - len(pileup[line]))])
+		pileup[line].extend([[0.0,0.0,0.0]] * (maxlen - len(pileup[line])))
 
 	return np.array(pileup), minend
 
