@@ -1,19 +1,17 @@
 import argparse, gzip, multiprocessing, random, sys
 import numpy as np
-import matplotlib
-matplotlib.use('agg')
-import matplotlib.pyplot as plt
-import pandas as pd
+import scipy.misc
 
 
 def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Create pileups from .paf read-to-read mapping and fastq reads.')
-	parser.add_argument('--avgdepth', type=int, default=10, help='Average coverage depth in each pileup image.')
+	parser.add_argument('--avgdepth', type=int, default=1000, help='Average coverage depth (not currently used).')
 	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
 	parser.add_argument('--limit_fastq', type=int, default=0, help='Limit number of reads to scan from fastq file.')
 	parser.add_argument('--limit_reads', type=int, default=0, help='Limit number of reads to generate pileups for.')
 	parser.add_argument('--mapping', required=True, help='Path to the .paf file of read-to-read mappings.')
 	parser.add_argument('--maxdepth', type=int, default=20, help='Maximum number of matched reads per pileup image.')
+	parser.add_argument('--plotdir', default='./', help='If --saveplots is used, directory path to save plots in.')
 	parser.add_argument('--processes', type=int, default=1, help='Number of multiple processes to run concurrently.')
 	parser.add_argument('--reads', required=True, help='Path to the .fastq reads file.')
 	parser.add_argument('--saveplots', action='store_true', help='If used, will plot the pileups and save them.')
@@ -21,7 +19,7 @@ def parse_args():  # handle user arguments
 	return args
 
 
-def process_reads(reads, compression, limit):  # using fastq file, create dict mapping read names to sequence and quality scores
+def process_reads(reads, compression, limit):  # using fastq file, map read names to sequence and quality scores
 	if compression == 'gzip':
 		reads_file = gzip.open(reads, 'r')
 	else:
@@ -44,28 +42,23 @@ def process_reads(reads, compression, limit):  # using fastq file, create dict m
 			if limit > 0 and read_count > limit:
 				break
 	reads_file.close()
-	reads_df = pd.DataFrame(reads_df)
 	return reads_df
 
 
-def make_pileup_rgb(pid, readname, readqual, readlen, matches, avgdepth, maxdepth, plot_opt):
+def make_pileup_rgb(pid, readname, readqual, readlen, matches, args):
+	avgdepth, maxdepth, saveplots, plotdir = args.avgdepth, args.maxdepth, args.saveplots, args.plotdir
 	pileup, total, pixel = [], 0, [100.0, readqual, 100.0]
 	seq = [pixel] * readlen
 	pileup.append(seq)
 	for i in range(maxdepth):
 		pileup.append([[0.0,0.0,0.0]])  # fill in placeholder lines
 
-	selections, depth_order, depth_index, num = range(len(matches.index)), range(1, maxdepth+1), 0, 0
+	selections, depth_order, depth_index, num = range(len(matches)), range(1, maxdepth+1), 0, 0
 	random.shuffle(selections); random.shuffle(depth_order)
-	while total < avgdepth * readlen and num < len(selections):
-		selection = matches.iloc[selections[num]]
-		total += int(selection[3] - selection[2])
-		num += 1
-	selections = selections[:num]
-	matches = matches.iloc[selections]
+	selections = selections[:maxdepth]
 
-	for selection in matches.iterrows():
-		selection = selection[1]
+	for s in selections:
+		selection = matches[s]
 		prefix = [[0.0,0.0,0.0]] * int(selection[2])
 		suffix = [[0.0,0.0,0.0]] * int(readlen-int(selection[3]))
 		seq = [list(selection[13:16])] * int(selection[3] - selection[2])
@@ -77,13 +70,15 @@ def make_pileup_rgb(pid, readname, readqual, readlen, matches, avgdepth, maxdept
 	for line in range(len(pileup)):
 		pileup[line].extend([[0.0,0.0,0.0]] * (readlen - len(pileup[line])))
 	pileup = np.array(pileup)
-	if plot_opt:
-		plt.imsave(readname+'.png', pileup, vmin=0, vmax=255, format='png', dpi=300)
+	if saveplots:
+		scipy.misc.toimage(pileup, cmin=0.0, cmax=255.0, mode='RGB').save(plotdir+readname+'.png')
 	return 0
 
 
 def main():
 	args = parse_args()
+	if not args.plotdir.endswith('/'):
+		args.plotdir += '/'
 	read_count, line_count, window_size = 0, 0, 200
 	reads_df = process_reads(args.reads, args.compression, args.limit_fastq)
 	reads_list = list(reads_df)
@@ -101,27 +96,23 @@ def main():
 		if args.limit_fastq > 0 and (splits[0] not in reads_list or splits[5] not in reads_list):
 			continue
 		if read_data != {} and cur_read != splits[0]:
-			cur_chunk = pd.DataFrame.from_dict(read_data, orient='index')
-			cur_chunk.rename(columns={13: 'match_pct', 14: 'green', 15: 'blue'}, inplace=True)
 			#cur_chunk = cur_chunk.sort_values('match_pct', ascending=False)
-			res = pool.apply_async(make_pileup_rgb, (read_count, cur_read, reads_df[cur_read][2], len(reads_df[cur_read][0]), cur_chunk, args.avgdepth, args.maxdepth, args.saveplots,))
+			res = pool.apply_async(make_pileup_rgb, (read_count, cur_read, reads_df[cur_read][2], len(reads_df[cur_read][0]), read_data, args,))
 			read_count += 1
 			if read_count % 100 == 0:
 				print 'Finished pileups for ' + str(read_count) + ' lines'
-			if read_count == args.limit_reads:
+			if read_count >= args.limit_reads:
 				break
 			read_data, line_count = {}, 0
 
-		splits += [splits[9] / splits[10] * 100.0, reads_df[splits[5]].iloc[2], ((splits[3]-splits[2])/(splits[8]-splits[7]))*100.0]
+		splits += [splits[9] / splits[10] * 100.0, reads_df[splits[5]][2], ((splits[3]-splits[2])/(splits[8]-splits[7]))*50.0]#100.0]
 		read_data[line_count] = splits
 		cur_read = splits[0]
 		line_count += 1
 
 	if read_data != {} and read_count < args.limit_reads:
-		cur_chunk = pd.DataFrame.from_dict(read_data, orient='index')
-		cur_chunk.rename(columns={13: 'match_pct', 14: 'green', 15: 'blue'}, inplace=True)
 		#cur_chunk = cur_chunk.sort_values('match_pct', ascending=False)
-		res = pool.apply_async(make_pileup_rgb, (read_count, cur_read, reads_df[cur_read][2], len(reads_df[cur_read][0]), cur_chunk, args.avgdepth, args.maxdepth, args.saveplots,))
+		res = pool.apply_async(make_pileup_rgb, (read_count, cur_read, reads_df[cur_read][2], len(reads_df[cur_read][0]), read_data, args,))
 		read_count += 1
 		if read_count % 100 == 0:
 			print 'Finished pileups for ' + str(read_count) + ' lines'	
