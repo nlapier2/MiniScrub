@@ -27,19 +27,19 @@ def process_reads(reads, compression, limit):  # using fastq file, map read name
 	reads_df, num, current = {}, -1, ''
 	read_count = 0
 	for line in reads_file:
-		line = line.strip()
+		if args.compression == 'gzip':
+			line = line.decode('utf8').strip()
 		num = (num + 1) % 4
 		if num == 0:
 			current = line[1:].split(' ')[0]
-		elif num == 1:
-			reads_df[current] = [0]#[line.upper()]
 			read_count += 1
+		#elif num == 1:
+		#	reads_df[current] = [line.upper()]
 		elif num == 3:
 			#scores = [int((ord(ch)-33)*2.75) for ch in line]
 			#scores = [(ord(ch)-33) for ch in line]
 			scores = [ord(ch) for ch in line]
-			reads_df[current].append(scores)
-			reads_df[current].append(np.mean(scores))
+			reads_df[current] = [scores, np.mean(scores)]
 			if limit > 0 and read_count > limit:
 				break
 	reads_file.close()
@@ -53,7 +53,7 @@ def make_pileup_bw(pid, readname, readqual, readlen, matches, args):
 	for i in range(maxdepth):
 		pileup.append([0.0])  # fill in placeholder lines
 
-	selections, depth_order, depth_index, num = range(1,len(matches)), range(1, maxdepth+1), 0, 0
+	selections, depth_order, depth_index, num = list(range(1,len(matches))), list(range(1, maxdepth+1)), 0, 0
 	random.shuffle(selections); random.shuffle(depth_order)
 	selections = selections[:maxdepth]
 
@@ -105,45 +105,45 @@ def make_pileup_rgb(pid, readname, readqual, readlen, matches, args):
 	pileup = np.array(pileup)
 	if saveplots:
 		scipy.misc.toimage(pileup, cmin=0.0, cmax=255.0, mode='RGB').save(plotdir+readname+'.png')
-	#matches, pileup = [], []
-	#del matches, pileup 
-	#gc.collect()
 	return 0
 
 
-def main():
+if __name__ == "__main__":
 	args = parse_args()
 	if not args.plotdir.endswith('/'):
 		args.plotdir += '/'
 	read_count, line_count, window_size = 0, 0, 200
-	pool = multiprocessing.Pool(processes=args.processes, maxtasksperchild=100)
 	reads_df = process_reads(args.reads, args.compression, args.limit_fastq)
 	reads_list = list(reads_df)
 
-	res = []
+	context = multiprocessing.get_context("spawn")
+	pool = context.Pool(processes=args.processes)#, maxtasksperchild=100)
+	#pool = multiprocessing.Pool(processes=args.processes, maxtasksperchild=100)
+
 	read_data, cur_read = {}, ''
 	if args.compression == 'gzip':
 		f = gzip.open(args.mapping, 'r')
 	else:
 		f = open(args.mapping, 'r')
 	for line in f:
+		if args.compression == 'gzip':
+			line = line.decode('utf8')
 		splits = line.strip().split('\t')
 		splits = splits[:12] + [splits[13]]
 		for i in (1,2,3,6,7,8,9,10,11):
 			splits[i] = float(splits[i])
 		splits[12] = [int(i) for i in splits[12][5:].split(',')]
-		if args.limit_fastq > 0 and (splits[0] not in reads_df or splits[5] not in reads_df):
+		if splits[0] not in reads_df or splits[5] not in reads_df:
 			continue
-		splits += [splits[9] / splits[10] * 100.0, reads_df[splits[5]][2], ((splits[3]-splits[2])/(splits[8]-splits[7]))*50.0]#100.0]
+		splits += [splits[9] / splits[10] * 100.0, reads_df[splits[5]][1], ((splits[3]-splits[2])/(splits[8]-splits[7]))*50.0]#100.0]
 		if args.limit_fastq > 0 and (splits[0] not in reads_list or splits[5] not in reads_list):
 			continue
 		if read_data != {} and cur_read != splits[0]:
-			#cur_chunk = cur_chunk.sort_values('match_pct', ascending=False)
-			pool.apply_async(make_pileup_bw, (read_count, cur_read, reads_df[cur_read][2], len(reads_df[cur_read][1]), read_data, args,))
-			#res.append(pool.apply_async(make_pileup_rgb, (read_count, cur_read, reads_df[cur_read][2], len(reads_df[cur_read][0]), read_data, args,)))
+			readqual, readlen = reads_df[cur_read][1], len(reads_df[cur_read][0])
+			pool.apply_async(make_pileup_bw, (read_count, cur_read, readqual, readlen, read_data, args,))
 			read_count += 1
-			if read_count % 100 == 0:
-				print 'Finished pileups for ' + str(read_count) + ' lines'
+			if read_count % 1000 == 0:
+				print('Finished pileups for ' + str(read_count) + ' lines')
 			if args.limit_reads > 0 and read_count >= args.limit_reads:
 				break
 			read_data, line_count = {}, 0
@@ -151,21 +151,16 @@ def main():
 		read_data[line_count] = splits
 		cur_read = splits[0]
 		line_count += 1
-		#splits = []
 
 	if read_data != {} and (read_count < args.limit_reads or args.limit_reads == 0):
-		#cur_chunk = cur_chunk.sort_values('match_pct', ascending=False)
-		pool.apply_async(make_pileup_bw, (read_count, cur_read, reads_df[cur_read][2], len(reads_df[cur_read][1]), read_data, args,))
+		readqual, readlen = reads_df[cur_read][1], len(reads_df[cur_read][0])
+		pool.apply_async(make_pileup_bw, (read_count, cur_read, readqual, readlen, read_data, args,))
 		read_count += 1
-		if read_count % 100 == 0:
-			print 'Finished pileups for ' + str(read_count) + ' lines'	
+		if read_count % 1000 == 0:
+			print('Finished pileups for ' + str(read_count) + ' lines')	
 
 	f.close()
 	pool.close()
 	pool.join()
-	print 'Done'
-
-
-if __name__ == "__main__":
-	main()
+	print('Done')
 #
