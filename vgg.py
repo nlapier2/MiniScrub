@@ -16,6 +16,8 @@ import argparse, glob, sys
 import numpy as np
 from scipy import ndimage
 from scipy.stats import pearsonr, spearmanr
+from sklearn.metrics import roc_auc_score
+import pandas as pd
 
 import warnings
 
@@ -27,6 +29,7 @@ from keras.engine.topology import get_source_inputs
 from keras.utils import layer_utils
 from keras.utils.data_utils import get_file
 from keras import backend as K
+from keras import optimizers
 
 from imagenet_utils import decode_predictions
 from imagenet_utils import preprocess_input
@@ -39,17 +42,20 @@ WEIGHTS_PATH_NO_TOP = 'https://github.com/fchollet/deep-learning-models/releases
 
 def parseargs():
 	parser = argparse.ArgumentParser(description='Create pileups from .paf read-to-read mapping and fastq reads.')
+	parser.add_argument('--debug', default=0, type=int, help='Number of examples to use in debug mode. If 0, non-debug mode (default).')
+	parser.add_argument('--epochs', default=5, type=int, help='Number of epochs to train the network. Default: 5.')
+	parser.add_argument('--extra', default=0, type=int, help='Number of fully connected layers to add to VGG. Default: 0')
 	parser.add_argument('--input', default='./', help='Directory with png pileup images. Default: current directory.')
 	parser.add_argument('--labels', default='labels.txt', help='Path to image labels file.')
 	parser.add_argument('--segment_size', type=int, default=100, help='Size of read segments to evaluate.')
-	parser.add_argument('--window_size', type=int, default=200, help='Window size for VGG. Window >= segment size.')
+	parser.add_argument('--window_size', type=int, default=100, help='Window size for VGG. Window >= segment size.')
 	args = parser.parse_args()
 	return args
 
 
 def VGG16(include_top=True, weights='imagenet',
           input_tensor=None, input_shape=None,
-          pooling=None):
+          pooling=None, extra=0):
 
     if weights not in {'imagenet', None}:
         raise ValueError('The `weights` argument should be either '
@@ -168,7 +174,7 @@ def VGG16(include_top=True, weights='imagenet',
     #x = BatchNormalization()(x)
     x = Dense(4096, activation='relu', name='fc2')(x)
     x = Dropout(0.5)(x)
-    for i in range(0):
+    for i in range(extra):
         #x = BatchNormalization()(x)
         x = Dense(4096, activation='relu', name='fc'+str(i+3))(x)
         x = Dropout(0.5)(x)	
@@ -206,14 +212,46 @@ def eval_preds(actual, predicted):
 	print
 	print 'Pearson correlation: ' + str(pearsonr(actual, predicted)[0])
 	print 'Spearman rank correlation: ' + str(spearmanr(actual, predicted)[0])
+	print
+	print 'Metrics for various cutoff thresholds:\n'
+	cutoffs, df = [0.6, 0.7, 0.8], {}
+	for val in cutoffs:
+		tp, fp, tn, fn = 0.0, 0.0, 0.0, 0.0
+		for i in range(len(actual)):
+			if actual[i] > val and predicted[i] > val:
+				tp += 1.0
+			elif actual[i] < val and predicted[i] > val:
+				fp += 1.0
+			elif actual[i] < val and predicted[i] < val:
+				tn += 1.0
+			elif actual[i] > val and predicted[i] < val:
+				fn += 1.0
+		precision, recall, f1, specificity, aucroc = 'nan', 'nan', 'nan', 'nan', 'nan'
+		if tp + fp > 0:
+			precision = tp / (tp + fp)
+		if tp + fn > 0:
+			recall = tp / (tp + fn)
+		if precision != 'nan' and recall != 'nan':
+			f1 = 2 * precision * recall / (precision + recall)
+		if fp + tn > 0:
+			specificity = tn / (tn + fp)
+		binary_actual = [1 if actual[i] > val else 0 for i in range(len(actual))]
+		if not (sum(binary_actual) == 0 or sum(binary_actual) == len(binary_actual)):
+			aucroc = roc_auc_score(binary_actual, predicted)
+		df[val] = [precision, recall, specificity, aucroc]
+	df = pd.DataFrame.from_dict(df, orient='index')
+	df = df.sort_index()
+	df.index.name = 'Cutoff'
+	df.columns = ['Precision', 'Recall/Sensitivity', 'Specificity', 'AUC-ROC']
+	print df
 
 
 def main():
 	args = parseargs()
 	if not args.input.endswith('/'):
 		args.input += '/'
-	if not (args.window_size >= args.segment_size and args.segment_size % 100 == 0):
-		print 'Error: window size must be >= segment size and segment size % 100 must = 0.'
+	if not (args.window_size >= args.segment_size):# and args.segment_size % 100 == 0):
+		print 'Error: window size must be >= segment size.'#' and segment size % 100 must = 0.'
 		sys.exit()
 
 	labels_dict = {}
@@ -222,7 +260,8 @@ def main():
 		splits = line.strip().split(' ')
 		if len(splits) < 2:
 			continue
-		labels_dict[splits[0]] = [float(i)/100.0 for i in splits[1].split(',')]
+		#labels_dict[splits[0]] = [float(i)/100.0 for i in splits[1].split(',')]
+		labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
 	labels_file.close()
 
 	data, labels, endpoints = [], [], []  # endpoints is position where full reads end
@@ -246,11 +285,14 @@ def main():
 				break
 			window = imarray[:,i*args.segment_size+sidelen:(i+2)*args.segment_size+sidelen]
 			label = imlabels[i+1]
+			#if label < 0.7:
+			#	label *= (1-(0.7-label))**(label*10)
 			data.append(window)
 			labels.append(label)
 		endpoints.append(len(data))
 
-	data, labels = data[:640], labels[:640]  # debug mode
+	if args.debug > 0:
+		data, labels = data[:args.debug], labels[:args.debug]  # debug mode
 	data = np.array(data)
 	labels = np.array(labels)
 
@@ -284,9 +326,11 @@ def main():
 	'''
 
 	#vgg = VGG16(include_top=False, weights='imagenet', input_tensor=None, input_shape=data[0].shape, pooling='max')
-	vgg = VGG16(include_top=False, weights=None, input_tensor=None, input_shape=data[0].shape, pooling='max')
-	vgg.compile(optimizer='sgd', loss='mean_squared_error')
-	vgg.fit(data[:train_index], labels[:train_index], epochs=5, validation_data=(data[train_index:valid_index], labels[train_index:valid_index]), batch_size=64)
+	vgg = VGG16(include_top=False, weights=None, input_tensor=None, input_shape=data[0].shape, pooling='max', extra=args.extra)
+	opt = optimizers.Adam(lr=0.0001)
+	vgg.compile(loss='mean_squared_error', optimizer=opt)
+	#vgg.compile(optimizer='adadelta', loss='mean_squared_error')
+	vgg.fit(data[:train_index], labels[:train_index], epochs=args.epochs, validation_data=(data[train_index:valid_index], labels[train_index:valid_index]), batch_size=64)
 	print 'Predicting...'
 	predictions = vgg.predict(data[valid_index:], batch_size=64)
 	eval_preds(labels[valid_index:], predictions)
