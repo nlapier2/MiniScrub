@@ -1,4 +1,4 @@
-import argparse, gc, gzip, multiprocessing, random, sys
+import argparse, gc, gzip, multiprocessing, random, sys, traceback
 import numpy as np
 import scipy.misc
 
@@ -23,7 +23,7 @@ def parse_args():  # handle user arguments
 	return args
 
 
-def process_reads(reads, compression, limit):  # using fastq file, map read names to sequence and quality scores
+def process_reads(reads, compression, limit, verbose):  # using fastq file, map read names to sequence and quality scores
 	if compression == 'gzip':
 		reads_file = gzip.open(reads, 'r')
 	else:
@@ -37,6 +37,8 @@ def process_reads(reads, compression, limit):  # using fastq file, map read name
 		if num == 0:
 			current = line[1:].split(' ')[0]
 			read_count += 1
+			if read_count % 10000 == 0 and verbose:
+				print('Finished scanning ' + str(read_count) + ' reads')
 		#elif num == 1:
 		#	reads_df[current] = [line.upper()]
 		elif num == 3:
@@ -50,7 +52,16 @@ def process_reads(reads, compression, limit):  # using fastq file, map read name
 	return reads_df
 
 
-def stretch_factor(startpos, line, all_mins, selection):
+def stretch_factor_whole(startpos, line, all_mins, selection):
+	ref_mins, match_mins = selection[12], selection[13]
+	start_index = len([i for i in ref_mins if i < startpos]) - 1
+	ref_start, ref_end = ref_mins[start_index], ref_mins[start_index+1] 
+	match_start, match_end = match_mins[start_index], match_mins[start_index+1]
+	stretch = (match_end - match_start) / (ref_end - ref_start)
+	return ref_end, stretch
+
+
+def stretch_factor_minimizers(startpos, line, all_mins, selection):
 	ref_mins, match_mins = selection[12], selection[13]
 	ref_start, ref_end, match_start, match_end = selection[2], selection[3], selection[7], selection[8]
 
@@ -64,38 +75,6 @@ def stretch_factor(startpos, line, all_mins, selection):
 	mini_start = match_mins[ref_mins.index(all_mins[startpos-1])]  # if no endpos was found (no more minimizers matched)
 	stretch = float(match_end - mini_start) / float(ref_end - all_mins[startpos-1]) 
 	return len(all_mins), stretch
-
-
-def make_pileup_bw_minimizers(pid, readname, readqual, readlen, matches, args):
-	maxdepth, saveplots, plotdir, pileup = args.maxdepth, args.saveplots, args.plotdir, []
-	minimizers = matches[0][12]
-	pileup.append([128.0 + readqual] * len(minimizers))  # the reference read
-	for i in range(maxdepth):
-		pileup.append([0.0])  # fill in placeholder lines
-
-	selections, depth_order, depth_index, num = list(range(1,len(matches))), list(range(1, maxdepth+1)), 0, 0
-	random.shuffle(selections); random.shuffle(depth_order)
-	selections = selections[:maxdepth]
-
-	for s in selections:
-		selection = matches[s]
-		seq = [selection[-2]] * len(minimizers)
-		for i in range(len(minimizers)):
-			if minimizers[i] < selection[12][0] or minimizers[i] > selection[12][-1]:  # read does not cover this minimizer
-				seq[i] = 0.0
-			elif minimizers[i] in selection[12]:  # if that minimizer matched by this read
-				seq[i] += 128.0
-		pileup[depth_order[depth_index]] = seq
-		depth_index += 1
-		if depth_index >= maxdepth:
-			break
-
-	for line in range(len(pileup)):
-		pileup[line].extend([0.0] * (len(minimizers) - len(pileup[line])))
-	pileup = np.array(pileup)
-	if saveplots:
-		scipy.misc.toimage(pileup, cmin=0.0, cmax=255.0).save(plotdir+readname+'.png')
-	return 0
 
 
 def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
@@ -122,12 +101,10 @@ def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 				if minimizers[i] < selection[12][0] or minimizers[i] > selection[12][-1]:  # read does not cover this minimizer
 					continue
 				if minimizers[i] in selection[12]:  # if that minimizer matched by this read
-					if i+1 < len(minimizers):
-						seq[minimizers[i]:minimizers[i+1]] = [i+128.0 for i in seq[minimizers[i]:minimizers[i+1]]]
-					elif minimizers[i]+15 < len(seq):
-						seq[minimizers[i]:minimizers[i]+15] = [i+128.0 for i in seq[minimizers[i]:minimizers[i]+15]]
+					if minimizers[i]+15 < len(seq):
+						seq[minimizers[i]:minimizers[i]+15] = [i+128.0 if i < 128.0 else i for i in seq[minimizers[i]:minimizers[i]+15]]
 					else:
-						seq[minimizers[i]:len(seq)] = [i+128.0 for i in seq[minimizers[i]:len(seq)]]
+						seq[minimizers[i]:len(seq)] = [i+128.0 if i < 128.0 else i for i in seq[minimizers[i]:len(seq)]]
 			pileup[depth_order[depth_index]] = seq
 			depth_index += 1
 			if depth_index >= maxdepth:
@@ -141,40 +118,111 @@ def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 		return 0
 	except:
 		print('Error in process ' + str(pid))
+		err = sys.exc_info()
+		tb = traceback.format_exception(err[0], err[1], err[2])
+		print(''.join(tb) + '\n')
 		return 1
 
 
-def make_pileup_rgb_whole(pid, readname, readqual, readlen, matches, args):
+def make_pileup_bw_minimizers(pid, readname, readqual, readlen, matches, args):
 	try:
-		maxdepth, saveplots, plotdir, debug, pileup = args.maxdepth, args.saveplots, args.plotdir, args.debug, []
-		pileup, total, pixel = [], 0, [100.0, readqual, 100.0]
-		seq = [pixel] * readlen
-		pileup.append(seq)
+		readqual = np.mean(readqual)
+		maxdepth, saveplots, plotdir, pileup = args.maxdepth, args.saveplots, args.plotdir, []
+		minimizers = matches[0][12]
+		pileup.append([128.0 + readqual] * len(minimizers))  # the reference read
 		for i in range(maxdepth):
-			pileup.append([[0.0,0.0,0.0]])  # fill in placeholder lines
+			pileup.append([0.0])  # fill in placeholder lines
 
-		selections, depth_order, depth_index, num = range(len(matches)), range(1, maxdepth+1), 0, 0
+		selections, depth_order, depth_index, num = list(range(1,len(matches))), list(range(1, maxdepth+1)), 0, 0
 		random.shuffle(selections); random.shuffle(depth_order)
 		selections = selections[:maxdepth]
 
 		for s in selections:
 			selection = matches[s]
-			prefix = [[0.0,0.0,0.0]] * int(selection[2])
-			suffix = [[0.0,0.0,0.0]] * int(readlen-int(selection[3]))
-			seq = [list(selection[13:16])] * int(selection[3] - selection[2])
-			pileup[depth_order[depth_index]] = prefix + seq + suffix
+			seq = [readqual] * len(minimizers)
+			for i in range(len(minimizers)):
+				if minimizers[i] < selection[12][0] or minimizers[i] > selection[12][-1]:  # read does not cover this minimizer
+					seq[i] = 0.0
+				elif minimizers[i] in selection[12]:  # if that minimizer matched by this read
+					seq[i] += 128.0
+			pileup[depth_order[depth_index]] = seq
 			depth_index += 1
 			if depth_index >= maxdepth:
 				break
 
 		for line in range(len(pileup)):
+			pileup[line].extend([0.0] * (len(minimizers) - len(pileup[line])))
+		pileup = np.array(pileup)
+		if saveplots:
+			scipy.misc.toimage(pileup, cmin=0.0, cmax=255.0).save(plotdir+readname+'.png')
+		return 0
+	except:
+		print('Error in process ' + str(pid))
+		err = sys.exc_info()
+		tb = traceback.format_exception(err[0], err[1], err[2])
+		print(''.join(tb) + '\n')
+		return 1
+
+
+def make_pileup_rgb_whole(pid, readname, readqual, readlen, matches, args):
+	try:
+		maxdepth, saveplots, plotdir, pileup = args.maxdepth, args.saveplots, args.plotdir, []
+		minimizers = matches[0][12]
+		avg_stretch = 128.0
+		seq = [[255.0, i*2.0, avg_stretch] for i in readqual]
+		pileup.append(seq)
+		for i in range(maxdepth):
+			pileup.append([[0.0,0.0,0.0]])  # fill in placeholder lines
+
+		selections, depth_order, depth_index, num = list(range(1,len(matches))), list(range(1, maxdepth+1)), 0, 0
+		random.shuffle(selections); random.shuffle(depth_order)
+		selections = selections[:maxdepth]
+
+		for s in selections:
+			selection = matches[s]
+			meanqual = np.mean(selection[14])*2.0
+			prefix = [[0.0,0.0,0.0]] * int(selection[2])
+			suffix = [[0.0,0.0,0.0]] * int(readlen-int(selection[3]))
+			pixels = [[70.0, readqual[i]*2.0, avg_stretch] for i in range(int(selection[2]), int(selection[3]))]
+			seq = prefix + pixels + suffix
+
+			for i in range(len(minimizers)):
+				if minimizers[i] < selection[12][0] or minimizers[i] > selection[12][-1]:  # read does not cover this minimizer
+					continue
+				if minimizers[i] in selection[12]:  # if that minimizer matched by this read
+					if minimizers[i]+15 < len(seq):
+						seq[minimizers[i]:minimizers[i]+15] = [[255.0, i[1], i[2]] if i[0] == 70.0 else i for i in seq[minimizers[i]:minimizers[i]+15]]
+					else:
+						seq[minimizers[i]:len(seq)] = [[255.0, i[1], i[2]] if i[0] == 70.0 else i for i in seq[minimizers[i]:len(seq)]]
+
+			pix = 0
+			while pix < len(seq):
+				if seq[pix][0] != 255.0 and seq[pix][2] != 0.0:# and (pix+1==len(seq) or seq[pix+1] != 255.0):
+					endpos, stretch = stretch_factor_whole(pix, seq, minimizers, selection)
+					stretch = min(255.0, avg_stretch * (stretch ** 5))
+					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
+					pix = endpos
+				else:
+					pix += 1
+
+			pileup[depth_order[depth_index]] = seq
+			depth_index += 1
+			if depth_index >= maxdepth:
+				break
+
+		#print(len(pileup))
+		for line in range(len(pileup)):
 			pileup[line].extend([[0.0,0.0,0.0]] * (readlen - len(pileup[line])))
+			#print(len(pileup[line]))
 		pileup = np.array(pileup)
 		if saveplots:
 			scipy.misc.toimage(pileup, cmin=0.0, cmax=255.0, mode='RGB').save(plotdir+readname+'.png')
 		return 0
 	except:
 		print('Error in process ' + str(pid))
+		err = sys.exc_info()
+		tb = traceback.format_exception(err[0], err[1], err[2])
+		print(''.join(tb) + '\n')
 		return 1
 
 
@@ -207,7 +255,7 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 			pix = 0
 			while pix < len(seq):
 				if seq[pix][0] != 255.0 and seq[pix][2] != 0.0:# and (pix+1==len(seq) or seq[pix+1] != 255.0):
-					endpos, stretch = stretch_factor(pix, seq, minimizers, selection)
+					endpos, stretch = stretch_factor_minimizers(pix, seq, minimizers, selection)
 					stretch = min(255.0, avg_stretch * (stretch ** 5))
 					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
 					pix = endpos
@@ -227,6 +275,9 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 		return 0
 	except:
 		print('Error in process ' + str(pid))
+		err = sys.exc_info()
+		tb = traceback.format_exception(err[0], err[1], err[2])
+		print(''.join(tb) + '\n')
 		return 1
 
 
@@ -238,7 +289,7 @@ if __name__ == "__main__":
 	if args.debug:
 		args.limit_fastq, args.limit_reads, args.saveplots = 10000, 10, True
 	read_count, line_count, window_size = 0, 0, 200
-	reads_df = process_reads(args.reads, args.compression, args.limit_fastq)
+	reads_df = process_reads(args.reads, args.compression, args.limit_fastq, args.verbose)
 	reads_list = list(reads_df)
 
 	context = multiprocessing.get_context("spawn")
@@ -289,7 +340,7 @@ if __name__ == "__main__":
 					else:
 						pool.apply_async(make_pileup_rgb_minimizers, (read_count, cur_read, readqual, readlen, read_data, args,))
 			read_count += 1
-			if read_count % 1000 == 0:
+			if read_count % 1000 == 0 and args.verbose:
 				print('Finished pileups for ' + str(read_count) + ' lines')
 			if args.limit_reads > 0 and read_count >= args.limit_reads:
 				break
@@ -324,7 +375,7 @@ if __name__ == "__main__":
 				else:
 					pool.apply_async(make_pileup_rgb_minimizers, (read_count, cur_read, readqual, readlen, read_data, args,))
 		read_count += 1
-		if read_count % 1000 == 0:
+		if read_count % 1000 == 0 and args.verbose:
 			print('Finished pileups for ' + str(read_count) + ' lines')	
 
 	f.close()
