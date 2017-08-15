@@ -213,7 +213,7 @@ def eval_preds(actual, predicted):
 	print 'Pearson correlation: ' + str(pearsonr(actual, predicted)[0])
 	print 'Spearman rank correlation: ' + str(spearmanr(actual, predicted)[0])
 	print
-	print 'Metrics for various cutoff thresholds:\n'
+	print 'Classification metrics for various cutoff thresholds:\n'
 	cutoffs, df = [0.6, 0.7, 0.8], {}
 	for val in cutoffs:
 		tp, fp, tn, fn = 0.0, 0.0, 0.0, 0.0
@@ -270,7 +270,7 @@ def main():
 		if imname not in labels_dict:
 			continue
 		imlabels = labels_dict[imname]
-		zero_segments, pos = [0,0], 0
+		zero_segments, pos = [1, 1], 0
 		for i in imlabels:  # here we determine the 0 identity segments on the end of reads, which are junk
 			if i == 0:
 				zero_segments[pos] += 1
@@ -279,12 +279,15 @@ def main():
 		imarray = ndimage.imread(fname, mode='RGB')
 
 		# break read into windows, excluding junk 0s at the ends
-		for i in range(zero_segments[0], len(imlabels)-2-zero_segments[1]):
-			sidelen = args.segment_size / 2  # extra space on each side of segment in window
-			if (i+2)*args.segment_size+sidelen > len(imarray[0]):
+		sidelen = (args.window_size - args.segment_size) / 2  # extra space on each side of segment in window
+		for i in range(zero_segments[0], len(imlabels)-zero_segments[1]):
+			startpos, endpos = (i*args.segment_size)-sidelen, ((i+1)*args.segment_size)+sidelen
+			if startpos < 0:
+				continue
+			if endpos > len(imarray[0]):
 				break
-			window = imarray[:,i*args.segment_size+sidelen:(i+2)*args.segment_size+sidelen]
-			label = imlabels[i+1]
+			window = imarray[:,startpos:endpos]
+			label = imlabels[i]#+1]
 			#if label < 0.7:
 			#	label *= (1-(0.7-label))**(label*10)
 			data.append(window)
