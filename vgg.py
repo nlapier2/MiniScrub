@@ -12,17 +12,20 @@ Model adapted for regression and methods for generating
 #from __future__ import print_function
 from __future__ import absolute_import
 
-import argparse, glob, sys
+import argparse, glob, os, sys
+import tensorflow as tf
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import numpy as np
 from scipy import ndimage
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import roc_auc_score
+from sklearn.svm import SVC, SVR
 import pandas as pd
 
 import warnings
 
 import keras
-from keras.models import Model, Sequential
+from keras.models import Model, Sequential, load_model
 from keras.layers import Conv2D, Dense, Dropout, Flatten, GlobalAveragePooling2D, GlobalMaxPooling2D, Input, MaxPooling2D
 from keras.layers.normalization import BatchNormalization
 from keras.engine.topology import get_source_inputs
@@ -42,20 +45,26 @@ WEIGHTS_PATH_NO_TOP = 'https://github.com/fchollet/deep-learning-models/releases
 
 def parseargs():
 	parser = argparse.ArgumentParser(description='Create pileups from .paf read-to-read mapping and fastq reads.')
+	parser.add_argument('--baseline', action='store_true', help='Compare with baseline: SVM trained on # of minimizers matched.')
+	parser.add_argument('--classify', default=-1.0, type=float, help='Turn into classification problem; specify threshold.')
 	parser.add_argument('--debug', default=0, type=int, help='Number of examples to use in debug mode. If 0, non-debug mode (default).')
 	parser.add_argument('--epochs', default=5, type=int, help='Number of epochs to train the network. Default: 5.')
 	parser.add_argument('--extra', default=0, type=int, help='Number of fully connected layers to add to VGG. Default: 0')
 	parser.add_argument('--input', default='./', help='Directory with png pileup images. Default: current directory.')
 	parser.add_argument('--labels', default='labels.txt', help='Path to image labels file.')
+	parser.add_argument('--load', default='NONE', help='Path to keras model file to load. Default: do not do this.')
+	parser.add_argument('--output', default='NONE', help='File to write model to. Default: no output.')
 	parser.add_argument('--segment_size', type=int, default=100, help='Size of read segments to evaluate.')
-	parser.add_argument('--window_size', type=int, default=100, help='Window size for VGG. Window >= segment size.')
+	parser.add_argument('--test_input', default='NONE', help='Directory of serparate set of images to test model on.')
+	parser.add_argument('--test_labels', default='NONE', help='Path to file with labels for images in test set.')
+	parser.add_argument('--window_size', type=int, default=200, help='Window size for VGG. Window >= segment size.')
 	args = parser.parse_args()
 	return args
 
 
 def VGG16(include_top=True, weights='imagenet',
           input_tensor=None, input_shape=None,
-          pooling=None, extra=0):
+          pooling=None, extra=0, classify=-1.0):
 
     if weights not in {'imagenet', None}:
         raise ValueError('The `weights` argument should be either '
@@ -180,18 +189,57 @@ def VGG16(include_top=True, weights='imagenet',
         x = Dropout(0.5)(x)	
     #'''
     #x = BatchNormalization()(x)
-    x = Dense(1, activation='relu', name='predictions_new')(x)
+    if classify == -1.0:
+    	x = Dense(1, activation='relu', name='predictions_new')(x)
+    else:
+    	x = Dense(1, activation='sigmoid', name='predictions_new')(x)
     new_model = Model(inputs, x, name='vgg16_new')
     return new_model
 
 
-def eval_preds(actual, predicted):
-	predicted = np.array([i[0] for i in predicted])
-	print 'Actual:'
-	print actual
-	print '\nPredicted:'
-	print predicted
-	print
+def eval_preds_classify(actual, predicted, val, baseline=False):
+	if not baseline:
+		predicted = np.array([i[0] for i in predicted])
+	tp, fp, tn, fn = 0.0, 0.0, 0.0, 0.0
+	for i in range(len(actual)):
+		if actual[i] >= val and predicted[i] >= val:
+			tp += 1.0
+		elif actual[i] < val and predicted[i] >= val:
+			fp += 1.0
+		elif actual[i] < val and predicted[i] < val:
+			tn += 1.0
+		elif actual[i] >= val and predicted[i] < val:
+			fn += 1.0
+	accuracy, precision, recall, f1, specificity, aucroc = ['nan' for i in range(6)]
+	if tp + fp + tn + fn > 0:
+		accuracy = (tp + tn) / (tp + fp + tn + fn)
+	if tp + fp > 0:
+		precision = tp / (tp + fp)
+	if tp + fn > 0:
+		recall = tp / (tp + fn)
+	if precision != 'nan' and recall != 'nan':
+		f1 = 2 * precision * recall / (precision + recall)
+	if fp + tn > 0:
+		specificity = tn / (tn + fp)
+	binary_actual = [1 if actual[i] > val else 0 for i in range(len(actual))]
+	if not (sum(binary_actual) == 0 or sum(binary_actual) == len(binary_actual)):
+		aucroc = roc_auc_score(binary_actual, predicted)
+	print 'Classification Threshold: ' + str(val)
+	print 'Accuracy: ' + str(accuracy)
+	print 'Precision: ' + str(precision)
+	print 'Recall/Sensitivity: ' + str(recall)
+	print 'Specificity: ' + str(specificity)
+	print 'AUC-ROC: ' + str(aucroc)
+
+
+def eval_preds(actual, predicted, baseline=False):
+	if not baseline:
+		predicted = np.array([i[0] for i in predicted])
+	#print 'Actual:'
+	#print actual
+	#print '\nPredicted:'
+	#print predicted
+	#print
 	errors = [abs(actual[i]-predicted[i]) for i in range(len(actual))]
 	print 'Average error: ' + str(np.mean(errors))
 	mse = np.mean([i**2 for i in errors])
@@ -218,15 +266,17 @@ def eval_preds(actual, predicted):
 	for val in cutoffs:
 		tp, fp, tn, fn = 0.0, 0.0, 0.0, 0.0
 		for i in range(len(actual)):
-			if actual[i] > val and predicted[i] > val:
+			if actual[i] >= val and predicted[i] >= val:
 				tp += 1.0
-			elif actual[i] < val and predicted[i] > val:
+			elif actual[i] < val and predicted[i] >= val:
 				fp += 1.0
 			elif actual[i] < val and predicted[i] < val:
 				tn += 1.0
-			elif actual[i] > val and predicted[i] < val:
+			elif actual[i] >= val and predicted[i] < val:
 				fn += 1.0
-		precision, recall, f1, specificity, aucroc = 'nan', 'nan', 'nan', 'nan', 'nan'
+		accuracy, precision, recall, f1, specificity, aucroc = ['nan' for i in range(6)]
+		if tp + fp + tn + fn > 0:
+			accuracy = (tp + tn) / (tp + fp + tn + fn)
 		if tp + fp > 0:
 			precision = tp / (tp + fp)
 		if tp + fn > 0:
@@ -238,33 +288,16 @@ def eval_preds(actual, predicted):
 		binary_actual = [1 if actual[i] > val else 0 for i in range(len(actual))]
 		if not (sum(binary_actual) == 0 or sum(binary_actual) == len(binary_actual)):
 			aucroc = roc_auc_score(binary_actual, predicted)
-		df[val] = [precision, recall, specificity, aucroc]
+		df[val] = [accuracy, precision, recall, specificity, aucroc]
 	df = pd.DataFrame.from_dict(df, orient='index')
 	df = df.sort_index()
 	df.index.name = 'Cutoff'
-	df.columns = ['Precision', 'Recall/Sensitivity', 'Specificity', 'AUC-ROC']
+	df.columns = ['Accuracy', 'Precision', 'Recall/Sensitivity', 'Specificity', 'AUC-ROC']
 	print df
 
 
-def main():
-	args = parseargs()
-	if not args.input.endswith('/'):
-		args.input += '/'
-	if not (args.window_size >= args.segment_size):# and args.segment_size % 100 == 0):
-		print 'Error: window size must be >= segment size.'#' and segment size % 100 must = 0.'
-		sys.exit()
-
-	labels_dict = {}
-	labels_file = open(args.labels, 'r')
-	for line in labels_file:
-		splits = line.strip().split(' ')
-		if len(splits) < 2:
-			continue
-		#labels_dict[splits[0]] = [float(i)/100.0 for i in splits[1].split(',')]
-		labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
-	labels_file.close()
-
-	data, labels, endpoints = [], [], []  # endpoints is position where full reads end
+def process_images(args, labels_dict):
+	data, svmdata, labels, endpoints = [], [], [], []  # endpoints is position where full reads end
 	for fname in glob.glob(args.input+'*.png'):
 		imname = fname.split('/')[-1][:-4]
 		if imname not in labels_dict:
@@ -277,6 +310,20 @@ def main():
 			else:
 				pos=1
 		imarray = ndimage.imread(fname, mode='RGB')
+
+		empty, emptycount = True, 0
+		for i in range(1, len(imarray)):
+			for pix in imarray[i]:
+				for val in pix:
+					if val != 0.0:
+						empty = False
+						break
+				if empty == False:
+					break
+			if empty == False:
+				break
+		if empty:  # ignore reads with no matching reads
+			continue
 
 		# break read into windows, excluding junk 0s at the ends
 		sidelen = (args.window_size - args.segment_size) / 2  # extra space on each side of segment in window
@@ -292,12 +339,51 @@ def main():
 			#	label *= (1-(0.7-label))**(label*10)
 			data.append(window)
 			labels.append(label)
+			if args.baseline:
+				vec, counts = [], 0
+				for col in range(len(window[0])):
+					counts = 0
+					for row in range(len(window)):
+						if window[row][col][0] > 128.0:
+							counts += 1
+					vec.append(counts)
+				svmdata.append(vec)
 		endpoints.append(len(data))
+		if args.debug > 0 and len(labels) >= args.debug:
+			break
 
-	if args.debug > 0:
-		data, labels = data[:args.debug], labels[:args.debug]  # debug mode
+	if len(data) == 0 or len(labels) == 0:
+		print 'Error: no data found.'
+		sys.exit()
+
 	data = np.array(data)
+	svmdata = np.array(svmdata)
 	labels = np.array(labels)
+	if args.classify != -1.0:
+		for i in range(len(labels)):
+			if labels[i] < args.classify:
+				labels[i] = 0.0
+			else:
+				labels[i] = 1.0
+	return data, svmdata, labels, endpoints
+
+
+def get_data(args, testing=False):
+	if testing == True:  # get data for the test images provided
+		args.labels = args.test_labels
+		args.input = args.test_input
+
+	labels_dict = {}
+	labels_file = open(args.labels, 'r')
+	for line in labels_file:
+		splits = line.strip().split(' ')
+		if len(splits) < 2:
+			continue
+		#labels_dict[splits[0]] = [float(i)/100.0 for i in splits[1].split(',')]
+		labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
+	labels_file.close()
+
+	data, svmdata, labels, endpoints = process_images(args, labels_dict)
 
 	# we set the indices to split the data into train/validation/test
 	# and round these up to the end of the nearest read to prevent overfitting
@@ -311,32 +397,88 @@ def main():
 			valid_index = point
 			break
 
-	'''
-	# we center the data at 0 by computing the average pixel and subtracting it
-	avg = [0.0, 0.0, 0.0]
-	for image in data:
-		for row in image:
-			for pixel in row:
-				if all(p == 0.0 for p in pixel):  # ignore all 0 (black) pixels
-					continue
-				avg = [avg[i]+pixel[i] for i in range(len(pixel))]
-	numpixels = float(data.shape[0] * data.shape[1] * data.shape[2])
-	avg = [avg[i]/numpixels for i in range(len(avg))]
-	for image in data:
-		for row in image:
-			for pixel in row:
-				pixel = [pixel[i]-avg[i] for i in range(len(pixel))]
-	'''
+	return data, svmdata, labels, train_index, valid_index
 
+
+def run_network(args, data, svmdata, labels, train_index, valid_index):
 	#vgg = VGG16(include_top=False, weights='imagenet', input_tensor=None, input_shape=data[0].shape, pooling='max')
-	vgg = VGG16(include_top=False, weights=None, input_tensor=None, input_shape=data[0].shape, pooling='max', extra=args.extra)
-	opt = optimizers.Adam(lr=0.0001)
-	vgg.compile(loss='mean_squared_error', optimizer=opt)
-	#vgg.compile(optimizer='adadelta', loss='mean_squared_error')
+	vgg = VGG16(include_top=False, weights=None, input_tensor=None, input_shape=data[0].shape, pooling='max', extra=args.extra, classify=args.classify)
+	if args.classify == -1.0:
+		opt = optimizers.Adam(lr=0.0001)
+		vgg.compile(loss='mean_squared_error', optimizer=opt)  #, optimizer='adadelta')
+		#vgg.compile(loss='mean_squared_error', optimizer='adadelta')
+	else:
+		#opt = optimizers.Adadelta(lr=0.1)
+		opt = optimizers.Adam(lr=0.00001)
+		vgg.compile(loss='binary_crossentropy', optimizer=opt)
 	vgg.fit(data[:train_index], labels[:train_index], epochs=args.epochs, validation_data=(data[train_index:valid_index], labels[train_index:valid_index]), batch_size=64)
-	print 'Predicting...'
+	print '\nPredicting...'
 	predictions = vgg.predict(data[valid_index:], batch_size=64)
-	eval_preds(labels[valid_index:], predictions)
+	if args.classify == -1.0:
+		eval_preds(labels[valid_index:], predictions)
+		if args.baseline:
+			print '\n\nSVM Baseline:'
+			svm = SVR()
+			svm.fit(svmdata[:train_index], labels[:train_index])
+			svm_predictions = svm.predict(svmdata[valid_index:])
+			eval_preds(labels[valid_index:], svm_predictions, baseline=True)
+	else:
+		eval_preds_classify(labels[valid_index:], predictions, args.classify)
+		if args.baseline:
+			print '\n\nSVM Baseline:'
+			svm = SVC()
+			svm.fit(svmdata[:train_index], labels[:train_index])
+			svm_predictions = svm.predict(svmdata[valid_index:])
+			eval_preds_classify(labels[valid_index:], svm_predictions, args.classify, baseline=True)
+
+	if args.output != 'NONE':
+		if not args.output.endswith('.hd5'):
+			args.output += '.hd5'
+		vgg.save(args.output)
+
+
+def load_and_test(args):
+	vgg = load_model(args.load)
+	print 'Model loaded successfully.'
+	if args.test_input == 'NONE':
+		print 'No data to test on. Exiting...'
+		sys.exit()
+
+	print 'Processing test data...'
+	data, svmdata, labels, train_index, valid_index = get_data(args, testing=True)
+	
+	print 'Predicting...'
+	if args.debug <= 0:
+		args.debug = len(data)
+	predictions = vgg.predict(data[:args.debug], batch_size=64)
+	if args.classify == -1.0:
+		eval_preds(labels[:args.debug], predictions)
+	else:
+		eval_preds_classify(labels[:args.debug], predictions, args.classify)
+
+
+def main():
+	args = parseargs()
+	if not args.input.endswith('/'):
+		args.input += '/'
+	if not (args.window_size >= args.segment_size):# and args.segment_size % 100 == 0):
+		print 'Error: window size must be >= segment size.'#' and segment size % 100 must = 0.'
+		sys.exit()
+	if args.classify != -1.0 and (args.classify < 0.0 or args.classify > 1.0):
+		print 'Error: Classification threshold must be a value from 0.0 to 1.0'
+		sys.exit()
+	if (args.test_input == 'NONE') ^ (args.test_labels == 'NONE'):
+		print 'Must specify both --test_input and --test_labels or neither.'
+		sys.exit() 
+
+	if args.load == 'NONE':
+		data, svmdata, labels, train_index, valid_index = get_data(args)
+		if len(data[:train_index]) == 0 or len(data[train_index:valid_index]) == 0 or len(data[valid_index:]) == 0:
+			print 'Not enough input images for train/validation/test split. Use more data.'
+			sys.exit()
+		run_network(args, data, svmdata, labels, train_index, valid_index)
+	else:
+		load_and_test(args)
 
 
 if __name__=='__main__':
