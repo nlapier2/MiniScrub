@@ -2,6 +2,8 @@ import argparse, gc, gzip, multiprocessing, random, sys, traceback
 import numpy as np
 import scipy.misc
 
+import os, subprocess, shlex
+
 
 def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Create pileups from .paf read-to-read mapping and fastq reads.')
@@ -15,6 +17,7 @@ def parse_args():  # handle user arguments
 	parser.add_argument('--mapping', required=True, help='Path to the .paf file of read-to-read mappings.')
 	parser.add_argument('--maxdepth', type=int, default=48, help='Maximum number of matched reads per pileup image.')
 	parser.add_argument('--mode', default='whole', choices=['whole', 'minimizers'], help='Whole read or minimizers-only.')
+	parser.add_argument('--muscle', default='NONE', help='Path to MUSCLE executable. Default: do not use MUSCLE.')
 	parser.add_argument('--plotdir', default='./', help='If --saveplots is used, directory path to save plots in.')
 	parser.add_argument('--processes', type=int, default=1, help='Number of multiple processes to run concurrently.')
 	parser.add_argument('--reads', required=True, help='Path to the .fastq reads file.')
@@ -29,24 +32,28 @@ def process_reads(reads, compression, limit, verbose):  # using fastq file, map 
 		reads_file = gzip.open(reads, 'r')
 	else:
 		reads_file = open(reads, 'r')
-	reads_df, num, current = {}, -1, ''
+	reads_df, num, current, bases = {}, -1, '', ''
 	read_count = 0
 	for line in reads_file:
 		if args.compression == 'gzip':
 			line = line.decode('utf8').strip()
+		else:
+			line = line.strip()
 		num = (num + 1) % 4
 		if num == 0:
 			current = line[1:].split(' ')[0]
 			read_count += 1
 			if read_count % 10000 == 0 and verbose:
 				print('Finished scanning ' + str(read_count) + ' reads')
-		#elif num == 1:
+		elif num == 1:
+			bases = line.upper()
 		#	reads_df[current] = [line.upper()]
 		elif num == 3:
 			#scores = [int((ord(ch)-33)*2.75) for ch in line]
 			#scores = [(ord(ch)-33) for ch in line]
 			scores = [ord(ch) for ch in line]
-			reads_df[current] = [scores, np.mean(scores)]
+			#reads_df[current] = [scores, np.mean(scores)]
+			reads_df[current] = [scores, np.mean(scores), bases]
 			if limit > 0 and read_count > limit:
 				break
 	reads_file.close()
@@ -56,8 +63,6 @@ def process_reads(reads, compression, limit, verbose):  # using fastq file, map 
 def stretch_factor_whole(startpos, line, all_mins, selection):
 	ref_mins, match_mins = selection[12], selection[13]
 	start_index = len([i for i in ref_mins if i < startpos]) - 1
-	if start_index >= len(ref_mins):
-		return startpos, 1.0
 	ref_start, ref_end = ref_mins[start_index], ref_mins[start_index+1] 
 	match_start, match_end = match_mins[start_index], match_mins[start_index+1]
 	stretch = (match_end - match_start) / (ref_end - ref_start)
@@ -289,8 +294,35 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 		return 1
 
 
+def make_pileup_bw_msa(pid, readname, readqual, readlen, matches, args):
+	try:
+		ch2pix = {'A':250.0, 'C':200.0, 'G':150.0, 'T':100.0, '-':0.0}
+		pileup, current = [[0.0]] * (args.maxdepth + 1), 1
+		pileup[0] = [ch2pix[ch] for ch in matches[0]]
+		for s in matches:
+			if s == 0:
+				continue
+			pileup[current] = [ch2pix[ch] for ch in matches[s]]
+			current += 1
+
+		for line in range(len(pileup)):
+			pileup[line].extend([0.0] * (len(pileup[0]) - len(pileup[line])))
+		pileup = np.array(pileup)
+		if args.saveplots:
+			scipy.misc.toimage(pileup, cmin=0.0, cmax=255.0).save(args.plotdir+readname+'.png')
+		return 0
+	except:
+		print('Error in process ' + str(pid))
+		err = sys.exc_info()
+		tb = traceback.format_exception(err[0], err[1], err[2])
+		print(''.join(tb) + '\n')
+		return 1
+
+
 if __name__ == "__main__":
 	args = parse_args()
+	if args.muscle != 'NONE' and not args.muscle.startswith('/'):
+		args.muscle = './' + args.muscle
 	if not args.plotdir.endswith('/'):
 		args.plotdir += '/'
 	args.maxdepth -= 1
@@ -329,10 +361,40 @@ if __name__ == "__main__":
 			readqual, readlen = reads_df[cur_read][0], len(reads_df[cur_read][0])
 			selections = list(range(1,len(read_data)))
 			random.shuffle(selections)
-			selections = selections[:args.maxdepth] + [0]
+			selections = [0] + selections[:args.maxdepth]
 			read_data = {i:read_data[i] for i in selections}
 
-			if args.debug:
+			if args.muscle != 'NONE':
+				fa = open(cur_read+'.fa', 'w')
+				for s in selections:
+					rd = read_data[s]
+					fa.write('>'+rd[5] + '\n' + reads_df[rd[5]][2][int(rd[7]):int(rd[8])] + '\n')
+				fa.close()
+				subprocess.call(shlex.split(args.muscle +' -in '+cur_read+'.fa -out '+cur_read+'.afa -maxiters 1 -diags'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+				read_data_msa, seq_name, seq_num, seq  = {}, '', 1, ''
+				afa = open(cur_read+'.afa', 'r')
+				for line in afa:
+					if line.startswith('>'):
+						if seq != '':
+							if seq_name == cur_read:
+								read_data_msa[0] = seq
+							else:
+								read_data_msa[seq_num] = seq
+								seq_num += 1
+						seq_name, seq = line.strip()[1:], ''
+					else:
+						seq += line.strip().decode('utf-8')
+				if seq != '':
+					if seq_name == cur_read:
+						read_data_msa[0] = seq
+					else:
+						read_data_msa[seq_num] = seq
+				afa.close()
+				subprocess.call(shlex.split('rm '+cur_read+'.fa '+cur_read+'.afa'))
+				pool.apply_async(make_pileup_bw_msa, (read_count, cur_read, readqual, readlen, read_data_msa, args,))
+
+			elif args.debug:
 				if args.mode == 'whole':
 					if args.color == 'bw':
 						make_pileup_bw_whole(read_count, cur_read, readqual, readlen, read_data, args)
