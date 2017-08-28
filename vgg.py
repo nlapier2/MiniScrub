@@ -20,6 +20,7 @@ from scipy import ndimage
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import roc_auc_score
 from sklearn.svm import SVC, SVR
+from sklearn.externals import joblib
 import pandas as pd
 
 import warnings
@@ -52,8 +53,10 @@ def parseargs():
 	parser.add_argument('--extra', default=0, type=int, help='Number of fully connected layers to add to VGG. Default: 0')
 	parser.add_argument('--input', default='./', help='Directory with png pileup images. Default: current directory.')
 	parser.add_argument('--labels', default='labels.txt', help='Path to image labels file.')
-	parser.add_argument('--load', default='NONE', help='Path to keras model file to load. Default: do not do this.')
+	parser.add_argument('--load', default='NONE', help='Path to keras model file to load. Default: do not load.')
+	parser.add_argument('--loadsvm', default='NONE', help='Path to saved pickled SVM file. Default: do not load.')
 	parser.add_argument('--output', default='NONE', help='File to write model to. Default: no output.')
+	parser.add_argument('--outputsvm', default='NONE', help='File to write svm model to. Default: no output.')
 	parser.add_argument('--segment_size', type=int, default=100, help='Size of read segments to evaluate.')
 	parser.add_argument('--test_input', default='NONE', help='Directory of serparate set of images to test model on.')
 	parser.add_argument('--test_labels', default='NONE', help='Path to file with labels for images in test set.')
@@ -217,7 +220,7 @@ def eval_preds_classify(actual, predicted, val, baseline=False):
 		precision = tp / (tp + fp)
 	if tp + fn > 0:
 		recall = tp / (tp + fn)
-	if precision != 'nan' and recall != 'nan':
+	if precision != 'nan' and recall != 'nan' and precision + recall > 0:
 		f1 = 2 * precision * recall / (precision + recall)
 	if fp + tn > 0:
 		specificity = tn / (tn + fp)
@@ -262,7 +265,7 @@ def eval_preds(actual, predicted, baseline=False):
 	print 'Spearman rank correlation: ' + str(spearmanr(actual, predicted)[0])
 	print
 	print 'Classification metrics for various cutoff thresholds:\n'
-	cutoffs, df = [0.6, 0.7, 0.8], {}
+	cutoffs, df = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9], {}
 	for val in cutoffs:
 		tp, fp, tn, fn = 0.0, 0.0, 0.0, 0.0
 		for i in range(len(actual)):
@@ -281,7 +284,7 @@ def eval_preds(actual, predicted, baseline=False):
 			precision = tp / (tp + fp)
 		if tp + fn > 0:
 			recall = tp / (tp + fn)
-		if precision != 'nan' and recall != 'nan':
+		if precision != 'nan' and recall != 'nan' and precision + recall > 0:
 			f1 = 2 * precision * recall / (precision + recall)
 		if fp + tn > 0:
 			specificity = tn / (tn + fp)
@@ -436,25 +439,42 @@ def run_network(args, data, svmdata, labels, train_index, valid_index):
 			args.output += '.hd5'
 		vgg.save(args.output)
 
+	if args.baseline and args.outputsvm != 'NONE':
+		if not args.outputsvm.endswith('.pkl'):
+			args.outputsvm += '.pkl'
+		joblib.dump(svm, args.outputsvm)
+
 
 def load_and_test(args):
-	vgg = load_model(args.load)
-	print 'Model loaded successfully.'
 	if args.test_input == 'NONE':
 		print 'No data to test on. Exiting...'
 		sys.exit()
-
 	print 'Processing test data...'
+	if args.loadsvm != 'NONE':
+		args.baseline = True
 	data, svmdata, labels, train_index, valid_index = get_data(args, testing=True)
-	
-	print 'Predicting...'
 	if args.debug <= 0:
 		args.debug = len(data)
-	predictions = vgg.predict(data[:args.debug], batch_size=64)
-	if args.classify == -1.0:
-		eval_preds(labels[:args.debug], predictions)
-	else:
-		eval_preds_classify(labels[:args.debug], predictions, args.classify)
+
+	if args.load != 'NONE':
+		vgg = load_model(args.load)
+		print 'Neural network model loaded successfully.'
+		print 'Predicting...'
+		predictions = vgg.predict(data[:args.debug], batch_size=64)
+		if args.classify == -1.0:
+			eval_preds(labels[:args.debug], predictions)
+		else:
+			eval_preds_classify(labels[:args.debug], predictions, args.classify)
+
+	if args.loadsvm != 'NONE':
+		svm = joblib.load(args.loadsvm)
+		print '\n\nSVM model loaded successfully.'
+		predictions = svm.predict(svmdata[:args.debug])
+		print 'SVM Predictions:'
+		if args.classify == -1.0:
+			eval_preds(labels[:args.debug], predictions, baseline=True)
+		else:
+			eval_preds_classify(labels[:args.debug], predictions, args.classify)
 
 
 def main():
@@ -471,7 +491,7 @@ def main():
 		print 'Must specify both --test_input and --test_labels or neither.'
 		sys.exit() 
 
-	if args.load == 'NONE':
+	if args.load == 'NONE' and args.loadsvm == 'NONE':
 		data, svmdata, labels, train_index, valid_index = get_data(args)
 		if len(data[:train_index]) == 0 or len(data[train_index:valid_index]) == 0 or len(data[valid_index:]) == 0:
 			print 'Not enough input images for train/validation/test split. Use more data.'
@@ -481,6 +501,6 @@ def main():
 		load_and_test(args)
 
 
-if __name__=='__main__':
+if __name__== '__main__':
 	main()
 #

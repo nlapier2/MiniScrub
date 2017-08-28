@@ -56,7 +56,7 @@ def process_reads(reads, compression, limit, verbose):  # using fastq file, map 
 def stretch_factor_whole(startpos, line, all_mins, selection):
 	ref_mins, match_mins = selection[12], selection[13]
 	start_index = len([i for i in ref_mins if i < startpos]) - 1
-	if start_index >= len(ref_mins):
+	if start_index >= len(ref_mins) or start_index < 0:
 		return startpos, 1.0
 	ref_start, ref_end = ref_mins[start_index], ref_mins[start_index+1] 
 	match_start, match_end = match_mins[start_index], match_mins[start_index+1]

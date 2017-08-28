@@ -5,6 +5,8 @@ def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Use cigar strings in sam files to compute percent identities.')
 	parser.add_argument('--amount', default=48, type=int, help='Number of bases/minimizers per label.')
 	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
+	parser.add_argument('--limit_paf', default=0, type=int, help='Optionally limit the number of reads from paf file.')
+	parser.add_argument('--limit_sam', default=0, type=int, help='Optionally limit the number of reads from sam file.')
 	parser.add_argument('--mode', default='minimizers', choices=['minimizers', 'bases'], help='Labels for minimizers or bases.')
 	parser.add_argument('--outfile', default='labels.txt', help='File to output label information to.')
 	parser.add_argument('--paf', default=None, help='Path to paf file with minimizers.')
@@ -13,7 +15,7 @@ def parse_args():  # handle user arguments
 	return args
 
 
-def read_paf(fname, compression):
+def read_paf(fname, compression, limit):
 	if compression == 'none':
 		paf = open(fname, 'r')
 	else:
@@ -29,6 +31,9 @@ def read_paf(fname, compression):
 			linecount += 1
 			if linecount % 10000 == 0:
 				print 'Done reading ' + str(linecount) + ' lines from paf'
+			if limit > 0 and linecount % limit == 0:
+				paf.close()
+				return minimizers
 
 	paf.close()
 	return minimizers
@@ -98,7 +103,7 @@ def main():
 
 	minimizers = {}
 	if args.mode == 'minimizers':
-		minimizers = read_paf(args.paf, args.compression)
+		minimizers = read_paf(args.paf, args.compression, args.limit_paf)
 
 	if args.compression == 'none':
 		infile, outfile = open(args.sam, 'r'), open(args.outfile, 'w')
@@ -122,6 +127,8 @@ def main():
 		linecount += 1
 		if linecount % 10000 == 0:
 			print 'Done processing ' + str(linecount) + ' lines from sam'
+		if args.limit_sam > 0 and linecount % args.limit_sam == 0:
+			sys.exit()
 
 	infile.close(); outfile.close()
 
