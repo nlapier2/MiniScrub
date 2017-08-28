@@ -9,7 +9,7 @@ def parse_args():  # handle user arguments
 	parser.add_argument('--color', default='rgb', choices=['bw', 'rgb'], help='Color mode (bw or rgb).')
 	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
 	parser.add_argument('--debug', action='store_true', help='Debug mode.')
-	parser.add_argument('-k', type=int, required=True, help='K-mer size of minimizers. Required.')
+	parser.add_argument('-k', type=int, default=13, help='K-mer size of minimizers. Required.')
 	parser.add_argument('--limit_fastq', type=int, default=0, help='Limit number of reads to scan from fastq file.')
 	parser.add_argument('--limit_reads', type=int, default=0, help='Limit number of reads to generate pileups for.')
 	parser.add_argument('--mapping', required=True, help='Path to the .paf file of read-to-read mappings.')
