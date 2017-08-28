@@ -6,7 +6,7 @@ import scipy.misc
 def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Create pileups from .paf read-to-read mapping and fastq reads.')
 	parser.add_argument('--avgdepth', type=int, default=1000, help='Average coverage depth (not currently used).')
-	parser.add_argument('--color', default='bw', choices=['bw', 'rgb'], help='Color mode (bw or rgb).')
+	parser.add_argument('--color', default='rgb', choices=['bw', 'rgb'], help='Color mode (bw or rgb).')
 	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
 	parser.add_argument('--debug', action='store_true', help='Debug mode.')
 	parser.add_argument('-k', type=int, required=True, help='K-mer size of minimizers. Required.')

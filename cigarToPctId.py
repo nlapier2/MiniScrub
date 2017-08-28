@@ -7,7 +7,7 @@ def parse_args():  # handle user arguments
 	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
 	parser.add_argument('--limit_paf', default=0, type=int, help='Optionally limit the number of reads from paf file.')
 	parser.add_argument('--limit_sam', default=0, type=int, help='Optionally limit the number of reads from sam file.')
-	parser.add_argument('--mode', default='minimizers', choices=['minimizers', 'bases'], help='Labels for minimizers or bases.')
+	parser.add_argument('--mode', default='bases', choices=['minimizers', 'bases'], help='Labels for minimizers or bases.')
 	parser.add_argument('--outfile', default='labels.txt', help='File to output label information to.')
 	parser.add_argument('--paf', default=None, help='Path to paf file with minimizers.')
 	parser.add_argument('--sam', required=True, help='Path to the sam file with ground truth labels.')
