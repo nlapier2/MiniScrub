@@ -1,4 +1,4 @@
-import argparse, gc, gzip, multiprocessing, random, sys, traceback
+import argparse, gc, gzip, multiprocessing, random, sys, time, traceback
 import numpy as np
 import scipy.misc
 
@@ -53,7 +53,7 @@ def process_reads(reads, compression, limit, verbose):  # using fastq file, map 
 	return reads_df
 
 
-def stretch_factor_whole(startpos, line, all_mins, selection):
+def stretch_factor_whole(startpos, selection):
 	ref_mins, match_mins = selection[12], selection[13]
 	start_index = len([i for i in ref_mins if i < startpos]) - 1
 	if start_index >= len(ref_mins) or start_index < 0:
@@ -64,20 +64,16 @@ def stretch_factor_whole(startpos, line, all_mins, selection):
 	return ref_end, stretch
 
 
-def stretch_factor_minimizers(startpos, line, all_mins, selection):
+def stretch_factor_minimizers(startpos, line, all_mins, selection, color='rgb'):
 	ref_mins, match_mins = selection[12], selection[13]
-	ref_start, ref_end, match_start, match_end = selection[2], selection[3], selection[7], selection[8]
-
+	match_start = selection[13][selection[12].index(all_mins[startpos])]
 	for endpos in range(startpos+1, len(line)):
-		if line[endpos][0] == 255.0:
-			allstart, allend = all_mins[startpos-1], all_mins[endpos]
-			ind = [ref_mins.index(allstart), ref_mins.index(allend)]
-			stretch = float(abs(match_mins[ind[1]]-match_mins[ind[0]])) / float(abs(ref_mins[ind[1]]-ref_mins[ind[0]]))
-			return endpos, stretch
-
-	mini_start = match_mins[ref_mins.index(all_mins[startpos-1])]  # if no endpos was found (no more minimizers matched)
-	stretch = float(match_end - mini_start) / float(ref_end - all_mins[startpos-1]) 
-	return len(all_mins), stretch
+		if color == 'rgb' and line[endpos][0] == 255.0:
+			match_end = selection[13][selection[12].index(all_mins[endpos])]
+			stretch = (match_end - match_start) / (endpos - startpos)
+			return endpos, min(255, round(abs(stretch)*10))
+	stretch = (selection[8] - match_start) / (len(line) - startpos)
+	return len(line), 0#min(255, round(abs(stretch)*10))
 
 
 def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
@@ -87,7 +83,8 @@ def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 		maxdepth, saveplots, plotdir, debug, pileup = args.maxdepth, args.saveplots, args.plotdir, args.debug, []
 		minimizers = matches[0][12]
 		del matches[0]
-		pileup.append([128.0 + readqual] * readlen)  # the reference read
+		avg_stretch = 64.0
+		pileup.append([128.0 + avg_stretch] * readlen)  # the reference read
 		for i in range(maxdepth):
 			pileup.append([0.0])  # fill in placeholder lines
 
@@ -96,7 +93,7 @@ def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 			selection = matches[s]
 			prefix = [0.0] * int(selection[2])
 			suffix = [0.0] * int(readlen-int(selection[3]))
-			readqual = np.mean(selection[14])
+			readqual = 1.0#np.mean(selection[14])
 			pixels = [readqual] * (readlen - len(prefix) - len(suffix))
 			seq = prefix + pixels + suffix
 
@@ -108,6 +105,20 @@ def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 						seq[minimizers[i]:minimizers[i]+k] = [i+128.0 if i < 128.0 else i for i in seq[minimizers[i]:minimizers[i]+k]]
 					else:
 						seq[minimizers[i]:len(seq)] = [i+128.0 if i < 128.0 else i for i in seq[minimizers[i]:len(seq)]]
+
+			pix = 0
+			while pix < len(seq):
+				if seq[pix] != 0.0:
+					endpos, stretch = stretch_factor_whole(pix, selection)
+					stretch = min(127.0, avg_stretch * (stretch ** 5))
+					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
+					if endpos <= pix:
+						pix += 1
+					else:
+						pix = endpos
+				else:
+					pix += 1
+
 			pileup[depth_order[depth_index]] = seq
 			depth_index += 1
 			if depth_index >= maxdepth:
@@ -202,7 +213,7 @@ def make_pileup_rgb_whole(pid, readname, readqual, readlen, matches, args):
 			pix = 0
 			while pix < len(seq):
 				if seq[pix][0] != 255.0 and seq[pix][2] != 0.0:# and (pix+1==len(seq) or seq[pix+1] != 255.0):
-					endpos, stretch = stretch_factor_whole(pix, seq, minimizers, selection)
+					endpos, stretch = stretch_factor_whole(pix, selection)
 					stretch = min(255.0, avg_stretch * (stretch ** 5))
 					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
 					if endpos <= pix:
@@ -238,8 +249,11 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 		maxdepth, saveplots, plotdir, pileup = args.maxdepth, args.saveplots, args.plotdir, []
 		minimizers = matches[0][12]
 		del matches[0]
-		avg_stretch = 128.0
+		avg_stretch = 1.0#128.0
 		seq = [[255.0, np.mean(readqual[i:i+k])*2.0, avg_stretch] if i+k <= len(readqual) else [255.0, np.mean(readqual[i:len(readqual)])*2.0, avg_stretch] for i in minimizers]
+		for i in range(len(minimizers)-1):
+			seq[i][2] = min(255, (minimizers[i+1] - minimizers[i])*10)
+		seq[-1][2] = min(255, (readlen - minimizers[-1])*10)
 		pileup.append(seq)
 		for i in range(maxdepth):
 			pileup.append([[0.0,0.0,0.0]])  # fill in placeholder lines
@@ -258,10 +272,9 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 					seq[pix][1] = np.mean(selection[14][matchind:matchind+k])*2.0 if matchind+k < len(selection[14]) else np.mean(selection[14][matchind:len(selection[14])])*2.0
 
 			pix = 0
-			while pix < len(seq):
-				if seq[pix][0] != 255.0 and seq[pix][2] != 0.0:# and (pix+1==len(seq) or seq[pix+1] != 255.0):
+			while pix + 1 < len(seq):
+				if seq[pix][2] != 0.0:# and seq[pix+1][0] != 255.0 and (pix+1==len(seq) or seq[pix+1] != 255.0):
 					endpos, stretch = stretch_factor_minimizers(pix, seq, minimizers, selection)
-					stretch = min(255.0, avg_stretch * (stretch ** 5))
 					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
 					if endpos <= pix:
 						pix += 1
@@ -290,15 +303,20 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 
 
 if __name__ == "__main__":
+	start = time.clock()
 	args = parse_args()
 	if not args.plotdir.endswith('/'):
 		args.plotdir += '/'
+	if args.maxdepth < 1:
+		print('Error: --maxdepth must be at least 1')
+		sys.exit()
 	args.maxdepth -= 1
 	if args.debug:
 		args.limit_fastq, args.limit_reads, args.saveplots = 10000, 10, True
 	read_count, line_count, window_size = 0, 0, 200
 	reads_df = process_reads(args.reads, args.compression, args.limit_fastq, args.verbose)
 	reads_list = list(reads_df)
+	print('Time to scan fastq file in seconds: ', str(time.clock()-start))
 
 	context = multiprocessing.get_context("spawn")
 	pool = context.Pool(processes=args.processes)#, maxtasksperchild=100)

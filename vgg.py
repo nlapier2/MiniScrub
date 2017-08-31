@@ -4,7 +4,10 @@ Author: Nathan LaPierre
 Modified version of the keras implementation of VGG16.
 The keras code is open-source under the MIT license,
 	& the VGG architecture and weights are 
-	available under the Creative Commons License.
+	available under the Creative Commons License
+	(https://creativecommons.org/licenses/by/4.0/).
+We use TensorFlow as our backend, which is under the
+	Apache license.
 Model adapted for regression and methods for generating
 	inputs and gathering results added.
 '''
@@ -330,6 +333,7 @@ def process_images(args, labels_dict):
 
 		# break read into windows, excluding junk 0s at the ends
 		sidelen = (args.window_size - args.segment_size) / 2  # extra space on each side of segment in window
+		blanks = [[0,0,0]] * ((48 - args.window_size) / 2)
 		for i in range(zero_segments[0], len(imlabels)-zero_segments[1]):
 			startpos, endpos = (i*args.segment_size)-sidelen, ((i+1)*args.segment_size)+sidelen
 			if startpos < 0:
@@ -337,9 +341,18 @@ def process_images(args, labels_dict):
 			if endpos > len(imarray[0]):
 				break
 			window = imarray[:,startpos:endpos]
-			label = imlabels[i]#+1]
-			#if label < 0.7:
-			#	label *= (1-(0.7-label))**(label*10)
+			
+			if len(blanks) > 0:
+				window = list(window)
+				for j in range(len(window)):
+					window[j] = list(window[j])
+					window[j] = np.concatenate((blanks, window[j], blanks), axis=0)
+				window = np.array(window)
+
+			label = imlabels[i]
+			if len(window) < 48:
+				blankrows = [[[0,0,0]] * len(window[0])] * (48 - len(window))
+				window = np.concatenate((window, blankrows), axis=0)
 			data.append(window)
 			labels.append(label)
 			if args.baseline:
@@ -488,8 +501,10 @@ def main():
 		print 'Error: Classification threshold must be a value from 0.0 to 1.0'
 		sys.exit()
 	if (args.test_input == 'NONE') ^ (args.test_labels == 'NONE'):
-		print 'Must specify both --test_input and --test_labels or neither.'
+		print 'Error: Must specify both --test_input and --test_labels or neither.'
 		sys.exit() 
+	if args.segment_size % 2 != 0 or args.window_size % 2 != 0:
+		print 'Error: segment_size and window_size must be even.'
 
 	if args.load == 'NONE' and args.loadsvm == 'NONE':
 		data, svmdata, labels, train_index, valid_index = get_data(args)
