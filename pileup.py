@@ -60,7 +60,7 @@ def stretch_factor_whole(startpos, selection):
 		return startpos, 1.0
 	ref_start, ref_end = ref_mins[start_index], ref_mins[start_index+1] 
 	match_start, match_end = match_mins[start_index], match_mins[start_index+1]
-	stretch = (match_end - match_start) / (ref_end - ref_start)
+	stretch = abs(match_end - match_start) / (ref_end - ref_start)
 	return ref_end, stretch
 
 
@@ -72,7 +72,11 @@ def stretch_factor_minimizers(startpos, line, all_mins, selection, color='rgb'):
 			match_end = selection[13][selection[12].index(all_mins[endpos])]
 			stretch = (match_end - match_start) / (endpos - startpos)
 			return endpos, min(255, round(abs(stretch)*10))
-	stretch = (selection[8] - match_start) / (len(line) - startpos)
+		elif color == 'bw' and line[endpos] >= 128.0:
+			match_end = selection[13][selection[12].index(all_mins[endpos])]
+			stretch = (match_end - match_start) / (endpos - startpos)
+			return endpos, min(127.0, round(abs(stretch)*5))
+	#stretch = (selection[8] - match_start) / (len(line) - startpos)
 	return len(line), 0#min(255, round(abs(stretch)*10))
 
 
@@ -93,7 +97,7 @@ def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 			selection = matches[s]
 			prefix = [0.0] * int(selection[2])
 			suffix = [0.0] * int(readlen-int(selection[3]))
-			readqual = 1.0#np.mean(selection[14])
+			readqual = 0.1#np.mean(selection[14])
 			pixels = [readqual] * (readlen - len(prefix) - len(suffix))
 			seq = prefix + pixels + suffix
 
@@ -108,10 +112,10 @@ def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 
 			pix = 0
 			while pix < len(seq):
-				if seq[pix] != 0.0:
+				if seq[pix] < 128.0 and seq[pix] > 0.0:
 					endpos, stretch = stretch_factor_whole(pix, selection)
-					stretch = min(127.0, avg_stretch * (stretch ** 5))
-					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
+					stretch = min(126.9, avg_stretch * (stretch ** 5))
+					seq[pix:endpos] = [i+stretch for i in seq[pix:endpos]]
 					if endpos <= pix:
 						pix += 1
 					else:
@@ -145,19 +149,34 @@ def make_pileup_bw_minimizers(pid, readname, readqual, readlen, matches, args):
 		maxdepth, saveplots, plotdir, pileup = args.maxdepth, args.saveplots, args.plotdir, []
 		minimizers = matches[0][12]
 		del matches[0]
-		pileup.append([128.0 + readqual] * len(minimizers))  # the reference read
+		#pileup.append([128.0 + readqual] * len(minimizers))  # the reference read
+		seq = [128.0 + ((minimizers[i+1] - minimizers[i])*5.0) for i in list(range(len(minimizers)-1))] + [128.0 + ((readlen - minimizers[-1])*5.0)]
+		pileup.append(seq)
 		for i in range(maxdepth):
 			pileup.append([0.0])  # fill in placeholder lines
 
 		depth_order, depth_index, num = list(range(1, maxdepth+1)), 0, 0
 		for s in matches:
 			selection = matches[s]
-			seq = [readqual] * len(minimizers)
+			seq = [1.0] * len(minimizers)
 			for i in range(len(minimizers)):
 				if minimizers[i] < selection[12][0] or minimizers[i] > selection[12][-1]:  # read does not cover this minimizer
 					seq[i] = 0.0
 				elif minimizers[i] in selection[12]:  # if that minimizer matched by this read
 					seq[i] += 128.0
+
+			pix = 0
+			while pix + 1 < len(seq):
+				if seq[pix] != 0.0:
+					endpos, stretch = stretch_factor_minimizers(pix, seq, minimizers, selection, color='bw')
+					seq[pix:endpos] = [stretch+i for i in seq[pix:endpos]]
+					if endpos <= pix:
+						pix += 1
+					else:
+						pix = endpos
+				else:
+					pix += 1
+
 			pileup[depth_order[depth_index]] = seq
 			depth_index += 1
 			if depth_index >= maxdepth:
