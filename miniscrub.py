@@ -1,4 +1,4 @@
-import argparse, glob, gzip, math, os, sys
+import argparse, glob, gzip, math, os, sys, time
 import numpy as np
 from scipy import ndimage
 
@@ -6,6 +6,14 @@ import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import keras
 from keras.models import load_model
+
+
+def echo(start, msg):
+	seconds = time.time() - start
+	m, s = divmod(seconds, 60)
+	h, m = divmod(m, 60)
+	hms = "%02d:%02d:%02d" % (h, m, s)
+	print '['+hms+'] ' + msg
 
 
 def parseargs():
@@ -16,10 +24,11 @@ def parseargs():
 	parser.add_argument('--input', default='./', help='Directory with png pileup images. Default: current directory.')
 	parser.add_argument('--labels', default='NONE', help='Path to image labels file. If provided, will NOT trim. Labels must correspond with segment_size.')
 	parser.add_argument('--load', required=True, help='Path to keras model file to load. Required.')
+	parser.add_argument('--min_length', default=500, type=int, help='Minimum length of reads to keep.')
 	parser.add_argument('--output', default='scrubbed-reads.fastq', help='File to write scrubbed reads to.')
 	parser.add_argument('--reads', default='NONE', help='Path to reads file. Default: do not trim (output statsitics instead).')
-	parser.add_argument('--segment_size', default=100, help='Neural net segment size to predict. Keep as default unless network retrained.')
-	parser.add_argument('--window_size', default=200, help='Neural net window size to predict. Keep as default unless network retrained.')
+	parser.add_argument('--segment_size', default=48, help='Neural net segment size to predict. Keep as default unless network retrained.')
+	parser.add_argument('--window_size', default=72, help='Neural net window size to predict. Keep as default unless network retrained.')
 	args = parser.parse_args()
 	return args
 
@@ -43,6 +52,7 @@ def process_images(args, labels_dict, testing=False):
 		# break read into windows, excluding junk 0s at the ends
 		sidelen = (args.window_size - args.segment_size) / 2  # extra space on each side of segment in window
 		prev_end, num_segments = 0, int(math.ceil(float(len(imarray[0])) / float(args.segment_size)))
+		blanks = [[0,0,0]] * ((48 - args.window_size) / 2)
 		for i in range(zero_segments[0], num_segments-zero_segments[1]):
 			startpos, endpos = (i*args.segment_size)-sidelen, ((i+1)*args.segment_size)+sidelen
 			if startpos < 0:
@@ -50,11 +60,20 @@ def process_images(args, labels_dict, testing=False):
 			if endpos > len(imarray[0]):
 				break
 			window = imarray[:,startpos:endpos]
+			
+			if len(blanks) > 0:
+				window = list(window)
+				for j in range(len(window)):
+					window[j] = list(window[j])
+					window[j] = np.concatenate((blanks, window[j], blanks), axis=0)
+				window = np.array(window)
+			if len(window) < 48:
+				blankrows = [[[0,0,0]] * len(window[0])] * (48 - len(window))
+				window = np.concatenate((window, blankrows), axis=0)
+
 			if testing == True:
-				label = imlabels[i]#+1]
+				label = imlabels[i]
 				labels.append(label)
-			#if label < 0.7:
-			#	label *= (1-(0.7-label))**(label*10)
 			data.append(window)
 			'''if imname in locations:
 				locations[imname].append(str(startpos)+'-'+str(endpos))
@@ -153,21 +172,21 @@ def eval_preds(actual, predicted, baseline=False):
 	print df
 
 
-def load_and_test(args):
-	print 'Processing input data...'
+def load_and_test(args, start):
+	echo(start, 'Processing input data...')
 	if args.labels != 'NONE':
 		data, svmdata, labels, locations = get_data(args, testing=True)
 	else:
 		data, svmdata, labels, locations = get_data(args, testing=False)
 
-	print 'Loading model...'
+	echo(start, 'Loading model...')
 	model = load_model(args.load)
-	print 'Model loaded successfully. Predicting...'
+	echo(start, 'Model loaded successfully. Predicting...')
 	predictions = model.predict(data, batch_size=64)
 	predictions = np.array([i[0] for i in predictions])
 
 	if args.labels != 'NONE':
-		print 'Evaluating predictions on provided labels...'
+		echo(start, 'Evaluating predictions on provided labels...')
 		eval_preds(labels[:args.debug], predictions)
 	return model, predictions, locations
 
@@ -193,17 +212,20 @@ def locate_predictions(predictions, locations):
 	return pred_locs
 
 
-def scrub_read(read, pred_locs, cutoff):
-	scrubbed_read = ''
-	if len(scrubbed_read) < pred_locs[0][1]:
-		scrubbed_read = read[:pred_locs[0][1]]
+def scrub_read(args, read, pred_locs, cutoff):
+	scrubbed_reads = ['']
+	if len(scrubbed_reads[0]) < pred_locs[0][1]:
+		scrubbed_reads[0] = read[:pred_locs[0][1]]
 	for i in range(len(pred_locs)):
 		pred, start, end = pred_locs[i]
 		if pred > cutoff:
-			scrubbed_read += read[start:end]
+			scrubbed_reads[-1] += read[start:end]
+		else:
+			scrubbed_reads.append('')
 	if len(read) > pred_locs[-1][2]:
-		scrubbed_read += read[pred_locs[-1][2]:]
-	return scrubbed_read
+		scrubbed_reads[-1] += read[pred_locs[-1][2]:]
+	scrubbed_reads = [i for i in scrubbed_reads if len(i) >= args.min_length]
+	return scrubbed_reads
 
 
 def output_reads(args, pred_locs):
@@ -213,26 +235,32 @@ def output_reads(args, pred_locs):
 		f = gzip.open(args.reads, 'r')
 	outfile = open(args.output, 'w')
 
-	cur_read, read_line, scrubbed_read, scrubbed_quals, line3, num = '', '', '', '', '', -1
+	cur_read, read_line, scrubbed_reads, scrubbed_quals, line3, num = '', '', [], [], '', -1
 	for line in f:
 		num = (num + 1) % 4
 		if num == 0:
 			cur_read = line[1:].split(' ')[0].strip()
-			read_line = line.strip()
+			read_line = line[len(cur_read)+1:].strip()
 		elif num == 1:
 			if cur_read in pred_locs:
-				scrubbed_read = scrub_read(line.strip(), pred_locs[cur_read], args.cutoff)
+				scrubbed_reads = scrub_read(args, line.strip(), pred_locs[cur_read], args.cutoff)
 			else:
-				scrubbed_read = ''
+				scrubbed_reads = []
 		elif num == 2:
 			line3 = line.strip()
-		elif len(scrubbed_read) > args.segment_size:
-			scrubbed_quals = scrub_read(line.strip(), pred_locs[cur_read], args.cutoff)
-			outfile.write('\n'.join([read_line, scrubbed_read, line3, scrubbed_quals]) + '\n')
+		elif len(scrubbed_reads) > 0:
+			scrubbed_quals = scrub_read(args, line.strip(), pred_locs[cur_read], args.cutoff)
+			for i in range(len(scrubbed_reads)):
+				if len(scrubbed_reads) > 1:
+					line1 = '@' + cur_read + '.' + str(i) + ' ' + read_line
+				else:
+					line1 = '@' + cur_read + ' ' + read_line
+				outfile.write('\n'.join([line1, scrubbed_reads[i], line3, scrubbed_quals[i]]) + '\n')
 	f.close(); outfile.close()
 
 
 def main():
+	start = time.time()
 	args = parseargs()
 	if not args.input.endswith('/'):
 		args.input += '/'
@@ -242,15 +270,17 @@ def main():
 		print 'If --reads specified, must specify --cutoff in range [0.0, 1.0)'
 		sys.exit()
 
-	model, predictions, locations = load_and_test(args)
+	model, predictions, locations = load_and_test(args, start)
+	echo(start, 'Predictions made. Locating segments to cut...')
 	pred_locs = locate_predictions(predictions, locations)
 
 	if args.labels == 'NONE':
 		if args.reads == 'NONE':
 			output_statistics(args, predictions)
 		else:
-			print 'Scrubbing reads...'
+			echo(start, 'Scrubbing reads...')
 			output_reads(args, pred_locs)
+	echo(start, 'Done.')
 
 
 if __name__ == '__main__':

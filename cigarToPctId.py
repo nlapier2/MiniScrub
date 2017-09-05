@@ -3,11 +3,11 @@ import argparse, gzip, re, sys
 
 def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Use cigar strings in sam files to compute percent identities.')
-	parser.add_argument('--amount', default=100, type=int, help='Number of bases/minimizers per label.')
+	parser.add_argument('--amount', default=48, type=int, help='Number of bases/minimizers per label.')
 	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
 	parser.add_argument('--limit_paf', default=0, type=int, help='Optionally limit the number of reads from paf file.')
 	parser.add_argument('--limit_sam', default=0, type=int, help='Optionally limit the number of reads from sam file.')
-	parser.add_argument('--mode', default='bases', choices=['minimizers', 'bases'], help='Labels for minimizers or bases.')
+	parser.add_argument('--mode', default='minimizers', choices=['minimizers', 'bases'], help='Labels for minimizers or bases.')
 	parser.add_argument('--outfile', default='labels.txt', help='File to output label information to.')
 	parser.add_argument('--paf', default=None, help='Path to paf file with minimizers.')
 	parser.add_argument('--sam', required=True, help='Path to the sam file with ground truth labels.')
@@ -97,9 +97,6 @@ def main():
 	if args.mode == 'minimizers' and args.paf == None:
 		print 'If in minimizers mode, must specify paf file location.'
 		sys.exit()
-	#if args.amount < 48:
-	#	print 'amount must be at least 48'
-	#	sys.exit()
 
 	minimizers = {}
 	if args.mode == 'minimizers':

@@ -14,7 +14,7 @@ def parse_args():  # handle user arguments
 	parser.add_argument('--limit_reads', type=int, default=0, help='Limit number of reads to generate pileups for.')
 	parser.add_argument('--mapping', required=True, help='Path to the .paf file of read-to-read mappings.')
 	parser.add_argument('--maxdepth', type=int, default=48, help='Maximum number of matched reads per pileup image.')
-	parser.add_argument('--mode', default='whole', choices=['whole', 'minimizers'], help='Whole read or minimizers-only.')
+	parser.add_argument('--mode', default='minimizers', choices=['whole', 'minimizers'], help='Whole read or minimizers-only.')
 	parser.add_argument('--plotdir', default='./', help='If --saveplots is used, directory path to save plots in.')
 	parser.add_argument('--processes', type=int, default=1, help='Number of multiple processes to run concurrently.')
 	parser.add_argument('--reads', required=True, help='Path to the .fastq reads file.')
@@ -322,7 +322,7 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 
 
 if __name__ == "__main__":
-	start = time.clock()
+	start = time.time()
 	args = parse_args()
 	if not args.plotdir.endswith('/'):
 		args.plotdir += '/'
@@ -335,7 +335,7 @@ if __name__ == "__main__":
 	read_count, line_count, window_size = 0, 0, 200
 	reads_df = process_reads(args.reads, args.compression, args.limit_fastq, args.verbose)
 	reads_list = list(reads_df)
-	print('Time to scan fastq file in seconds: ', str(time.clock()-start))
+	print('Time to scan fastq file in seconds: ', str(time.time()-start))
 
 	context = multiprocessing.get_context("spawn")
 	pool = context.Pool(processes=args.processes)#, maxtasksperchild=100)
