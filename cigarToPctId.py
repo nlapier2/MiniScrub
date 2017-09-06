@@ -39,7 +39,7 @@ def read_paf(fname, compression, limit_paf, limit_length):
 	for line in paf:
 		splits = line.strip().split('\t')
 		if splits[0] == splits[5]:  # read mapped against itself
-			if limit_length > 0 and int(splits[1] > limit_length):
+			if limit_length > 0 and int(splits[1]) > limit_length:
 				continue
 			if splits[-1][5] == 'I':
 				minimizers[splits[0]] = [int(i) for i in splits[-1][6:].split(',')]

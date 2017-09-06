@@ -12,6 +12,7 @@ Model adapted for regression and methods for generating
 	inputs and gathering results added.
 '''
 
+
 #from __future__ import print_function
 from __future__ import absolute_import
 
@@ -27,6 +28,7 @@ from sklearn.externals import joblib
 import pandas as pd
 
 import warnings
+import json
 
 import keras
 from keras.models import Model, Sequential, load_model
@@ -38,13 +40,11 @@ from keras.utils.data_utils import get_file
 from keras import backend as K
 from keras import optimizers
 
-from imagenet_utils import decode_predictions
-from imagenet_utils import preprocess_input
-from imagenet_utils import _obtain_input_shape
-
 
 WEIGHTS_PATH = 'https://github.com/fchollet/deep-learning-models/releases/download/v0.1/vgg16_weights_tf_dim_ordering_tf_kernels.h5'
 WEIGHTS_PATH_NO_TOP = 'https://github.com/fchollet/deep-learning-models/releases/download/v0.1/vgg16_weights_tf_dim_ordering_tf_kernels_notop.h5'
+CLASS_INDEX = None
+CLASS_INDEX_PATH = 'https://s3.amazonaws.com/deep-learning-models/image-models/imagenet_class_index.json'
 start = time.time()
 
 
@@ -76,6 +76,92 @@ def parseargs():
 	parser.add_argument('--window_size', type=int, default=200, help='Window size for VGG. Window >= segment size.')
 	args = parser.parse_args()
 	return args
+
+
+def preprocess_input(x, data_format=None):
+    if data_format is None:
+        data_format = K.image_data_format()
+    assert data_format in {'channels_last', 'channels_first'}
+
+    if data_format == 'channels_first':
+        # 'RGB'->'BGR'
+        x = x[:, ::-1, :, :]
+        # Zero-center by mean pixel
+        x[:, 0, :, :] -= 103.939
+        x[:, 1, :, :] -= 116.779
+        x[:, 2, :, :] -= 123.68
+    else:
+        # 'RGB'->'BGR'
+        x = x[:, :, :, ::-1]
+        # Zero-center by mean pixel
+        x[:, :, :, 0] -= 103.939
+        x[:, :, :, 1] -= 116.779
+        x[:, :, :, 2] -= 123.68
+    return x
+
+
+def decode_predictions(preds, top=5):
+    global CLASS_INDEX
+    if len(preds.shape) != 2 or preds.shape[1] != 1000:
+        raise ValueError('`decode_predictions` expects '
+                         'a batch of predictions '
+                         '(i.e. a 2D array of shape (samples, 1000)). '
+                         'Found array with shape: ' + str(preds.shape))
+    if CLASS_INDEX is None:
+        fpath = get_file('imagenet_class_index.json',
+                         CLASS_INDEX_PATH,
+                         cache_subdir='models')
+        CLASS_INDEX = json.load(open(fpath))
+    results = []
+    for pred in preds:
+        top_indices = pred.argsort()[-top:][::-1]
+        result = [tuple(CLASS_INDEX[str(i)]) + (pred[i],) for i in top_indices]
+        result.sort(key=lambda x: x[2], reverse=True)
+        results.append(result)
+    return results
+
+
+def _obtain_input_shape(input_shape, default_size, min_size, data_format, include_top):
+    if data_format == 'channels_first':
+        default_shape = (3, default_size, default_size)
+    else:
+        default_shape = (default_size, default_size, 3)
+    if include_top:
+        if input_shape is not None:
+            if input_shape != default_shape:
+                raise ValueError('When setting`include_top=True`, '
+                                 '`input_shape` should be ' + str(default_shape) + '.')
+        input_shape = default_shape
+    else:
+        if data_format == 'channels_first':
+            if input_shape is not None:
+                if len(input_shape) != 3:
+                    raise ValueError('`input_shape` must be a tuple of three integers.')
+                if input_shape[0] != 3:
+                    raise ValueError('The input must have 3 channels; got '
+                                     '`input_shape=' + str(input_shape) + '`')
+                if ((input_shape[1] is not None and input_shape[1] < min_size) or
+                   (input_shape[2] is not None and input_shape[2] < min_size)):
+                    raise ValueError('Input size must be at least ' +
+                                     str(min_size) + 'x' + str(min_size) + ', got '
+                                     '`input_shape=' + str(input_shape) + '`')
+            else:
+                input_shape = (3, None, None)
+        else:
+            if input_shape is not None:
+                if len(input_shape) != 3:
+                    raise ValueError('`input_shape` must be a tuple of three integers.')
+                if input_shape[-1] != 3:
+                    raise ValueError('The input must have 3 channels; got '
+                                     '`input_shape=' + str(input_shape) + '`')
+                if ((input_shape[0] is not None and input_shape[0] < min_size) or
+                   (input_shape[1] is not None and input_shape[1] < min_size)):
+                    raise ValueError('Input size must be at least ' +
+                                     str(min_size) + 'x' + str(min_size) + ', got '
+                                     '`input_shape=' + str(input_shape) + '`')
+            else:
+                input_shape = (None, None, 3)
+    return input_shape
 
 
 def VGG16(include_top=True, weights='imagenet',
@@ -375,7 +461,7 @@ def process_images(args, labels_dict):
 					vec.append(counts)
 				svmdata.append(vec)
 		endpoints.append(len(data))
-		if args.debug > 0 and len(labels) >= args.debug:
+		if args.debug > 0 and len(endpoints) >= args.debug:
 			break
 
 	if len(data) == 0 or len(labels) == 0:
@@ -477,28 +563,26 @@ def load_and_test(args):
 	if args.loadsvm != 'NONE':
 		args.baseline = True
 	data, svmdata, labels, train_index, valid_index = get_data(args, testing=True)
-	if args.debug <= 0:
-		args.debug = len(data)
 	echo('Done processing test data. Loading models...')
 
 	if args.load != 'NONE':
 		vgg = load_model(args.load)
 		echo('Neural network model loaded successfully. Predicting...\n')
-		predictions = vgg.predict(data[:args.debug], batch_size=64)
+		predictions = vgg.predict(data, batch_size=64)
 		if args.classify == -1.0:
-			eval_preds(labels[:args.debug], predictions)
+			eval_preds(labels, predictions)
 		else:
-			eval_preds_classify(labels[:args.debug], predictions, args.classify)
+			eval_preds_classify(labels, predictions, args.classify)
 
 	if args.loadsvm != 'NONE':
 		svm = joblib.load(args.loadsvm)
-		print '\n\n'; echo('SVM model loaded successfully.')
-		predictions = svm.predict(svmdata[:args.debug])
+		print '\n\n'; echo('SVM model loaded successfully. Predicting...\n')
+		predictions = svm.predict(svmdata)
 		echo('SVM Predictions:\n')
 		if args.classify == -1.0:
-			eval_preds(labels[:args.debug], predictions, baseline=True)
+			eval_preds(labels, predictions, baseline=True)
 		else:
-			eval_preds_classify(labels[:args.debug], predictions, args.classify)
+			eval_preds_classify(labels, predictions, args.classify)
 
 
 def main():
