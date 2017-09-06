@@ -15,7 +15,7 @@ Model adapted for regression and methods for generating
 #from __future__ import print_function
 from __future__ import absolute_import
 
-import argparse, glob, os, sys
+import argparse, glob, os, sys, time
 import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import numpy as np
@@ -45,6 +45,16 @@ from imagenet_utils import _obtain_input_shape
 
 WEIGHTS_PATH = 'https://github.com/fchollet/deep-learning-models/releases/download/v0.1/vgg16_weights_tf_dim_ordering_tf_kernels.h5'
 WEIGHTS_PATH_NO_TOP = 'https://github.com/fchollet/deep-learning-models/releases/download/v0.1/vgg16_weights_tf_dim_ordering_tf_kernels_notop.h5'
+start = time.time()
+
+
+def echo(msg):
+	global start
+	seconds = time.time() - start
+	m, s = divmod(seconds, 60)
+	h, m = divmod(m, 60)
+	hms = "%02d:%02d:%02d" % (h, m, s)
+	print '['+hms+'] ' + msg
 
 
 def parseargs():
@@ -427,13 +437,14 @@ def run_network(args, data, svmdata, labels, train_index, valid_index):
 		#opt = optimizers.Adadelta(lr=0.1)
 		opt = optimizers.Adam(lr=0.00001)
 		vgg.compile(loss='binary_crossentropy', optimizer=opt)
+	echo('Fitting model...')
 	vgg.fit(data[:train_index], labels[:train_index], epochs=args.epochs, validation_data=(data[train_index:valid_index], labels[train_index:valid_index]), batch_size=64)
-	print '\nPredicting...'
+	print '\n'; echo('Predicting...')
 	predictions = vgg.predict(data[valid_index:], batch_size=64)
 	if args.classify == -1.0:
 		eval_preds(labels[valid_index:], predictions)
 		if args.baseline:
-			print '\n\nSVM Baseline:'
+			print '\n\n'; echo('SVM Baseline:')
 			svm = SVR()
 			svm.fit(svmdata[:train_index], labels[:train_index])
 			svm_predictions = svm.predict(svmdata[valid_index:])
@@ -441,7 +452,7 @@ def run_network(args, data, svmdata, labels, train_index, valid_index):
 	else:
 		eval_preds_classify(labels[valid_index:], predictions, args.classify)
 		if args.baseline:
-			print '\n\nSVM Baseline:'
+			print '\n\n'; echo('SVM Baseline:')
 			svm = SVC()
 			svm.fit(svmdata[:train_index], labels[:train_index])
 			svm_predictions = svm.predict(svmdata[valid_index:])
@@ -462,17 +473,17 @@ def load_and_test(args):
 	if args.test_input == 'NONE':
 		print 'No data to test on. Exiting...'
 		sys.exit()
-	print 'Processing test data...'
+	echo('Processing test data...')
 	if args.loadsvm != 'NONE':
 		args.baseline = True
 	data, svmdata, labels, train_index, valid_index = get_data(args, testing=True)
 	if args.debug <= 0:
 		args.debug = len(data)
+	echo('Done processing test data. Loading models...')
 
 	if args.load != 'NONE':
 		vgg = load_model(args.load)
-		print 'Neural network model loaded successfully.'
-		print 'Predicting...'
+		echo('Neural network model loaded successfully. Predicting...\n')
 		predictions = vgg.predict(data[:args.debug], batch_size=64)
 		if args.classify == -1.0:
 			eval_preds(labels[:args.debug], predictions)
@@ -481,9 +492,9 @@ def load_and_test(args):
 
 	if args.loadsvm != 'NONE':
 		svm = joblib.load(args.loadsvm)
-		print '\n\nSVM model loaded successfully.'
+		print '\n\n'; echo('SVM model loaded successfully.')
 		predictions = svm.predict(svmdata[:args.debug])
-		print 'SVM Predictions:'
+		echo('SVM Predictions:\n')
 		if args.classify == -1.0:
 			eval_preds(labels[:args.debug], predictions, baseline=True)
 		else:
@@ -507,13 +518,16 @@ def main():
 		print 'Error: segment_size and window_size must be even.'
 
 	if args.load == 'NONE' and args.loadsvm == 'NONE':
+		echo('Gathering input data...')
 		data, svmdata, labels, train_index, valid_index = get_data(args)
 		if len(data[:train_index]) == 0 or len(data[train_index:valid_index]) == 0 or len(data[valid_index:]) == 0:
 			print 'Not enough input images for train/validation/test split. Use more data.'
 			sys.exit()
+		echo('Data gathering complete. Compiling CNN model...')
 		run_network(args, data, svmdata, labels, train_index, valid_index)
 	else:
 		load_and_test(args)
+	print ''; echo('Done')
 
 
 if __name__== '__main__':

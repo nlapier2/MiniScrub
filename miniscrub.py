@@ -8,7 +8,11 @@ import keras
 from keras.models import load_model
 
 
-def echo(start, msg):
+start = time.time()
+
+
+def echo(msg):
+	global start
 	seconds = time.time() - start
 	m, s = divmod(seconds, 60)
 	h, m = divmod(m, 60)
@@ -172,21 +176,21 @@ def eval_preds(actual, predicted, baseline=False):
 	print df
 
 
-def load_and_test(args, start):
-	echo(start, 'Processing input data...')
+def load_and_test(args):
+	echo('Processing input data...')
 	if args.labels != 'NONE':
 		data, svmdata, labels, locations = get_data(args, testing=True)
 	else:
 		data, svmdata, labels, locations = get_data(args, testing=False)
 
-	echo(start, 'Loading model...')
+	echo('Loading model...')
 	model = load_model(args.load)
-	echo(start, 'Model loaded successfully. Predicting...')
+	echo('Model loaded successfully. Predicting...')
 	predictions = model.predict(data, batch_size=64)
 	predictions = np.array([i[0] for i in predictions])
 
 	if args.labels != 'NONE':
-		echo(start, 'Evaluating predictions on provided labels...')
+		echo('Evaluating predictions on provided labels...')
 		eval_preds(labels[:args.debug], predictions)
 	return model, predictions, locations
 
@@ -260,7 +264,6 @@ def output_reads(args, pred_locs):
 
 
 def main():
-	start = time.time()
 	args = parseargs()
 	if not args.input.endswith('/'):
 		args.input += '/'
@@ -270,17 +273,17 @@ def main():
 		print 'If --reads specified, must specify --cutoff in range [0.0, 1.0)'
 		sys.exit()
 
-	model, predictions, locations = load_and_test(args, start)
-	echo(start, 'Predictions made. Locating segments to cut...')
+	model, predictions, locations = load_and_test(args)
+	echo('Predictions made. Locating segments to cut...')
 	pred_locs = locate_predictions(predictions, locations)
 
 	if args.labels == 'NONE':
 		if args.reads == 'NONE':
 			output_statistics(args, predictions)
 		else:
-			echo(start, 'Scrubbing reads...')
+			echo('Scrubbing reads...')
 			output_reads(args, pred_locs)
-	echo(start, 'Done.')
+	echo('Done.')
 
 
 if __name__ == '__main__':

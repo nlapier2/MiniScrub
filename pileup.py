@@ -3,6 +3,18 @@ import numpy as np
 import scipy.misc
 
 
+start = time.time()
+
+
+def echo(msg):
+	global start
+	seconds = time.time() - start
+	m, s = divmod(seconds, 60)
+	h, m = divmod(m, 60)
+	hms = "%02d:%02d:%02d" % (h, m, s)
+	print('['+hms+'] ' + msg)
+
+
 def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Create pileups from .paf read-to-read mapping and fastq reads.')
 	parser.add_argument('--avgdepth', type=int, default=1000, help='Average coverage depth (not currently used).')
@@ -39,7 +51,7 @@ def process_reads(reads, compression, limit, verbose):  # using fastq file, map 
 			current = line[1:].split(' ')[0]
 			read_count += 1
 			if read_count % 10000 == 0 and verbose:
-				print('Finished scanning ' + str(read_count) + ' reads')
+				echo('Finished scanning ' + str(read_count) + ' reads')
 		#elif num == 1:
 		#	reads_df[current] = [line.upper()]
 		elif num == 3:
@@ -322,7 +334,6 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 
 
 if __name__ == "__main__":
-	start = time.time()
 	args = parse_args()
 	if not args.plotdir.endswith('/'):
 		args.plotdir += '/'
@@ -333,9 +344,10 @@ if __name__ == "__main__":
 	if args.debug:
 		args.limit_fastq, args.limit_reads, args.saveplots = 10000, 10, True
 	read_count, line_count, window_size = 0, 0, 200
+	echo('Scanning reads file...')
 	reads_df = process_reads(args.reads, args.compression, args.limit_fastq, args.verbose)
 	reads_list = list(reads_df)
-	print('Time to scan fastq file in seconds: ', str(time.time()-start))
+	echo('Done scanning reads file. Beginning pileup generation procresses...')
 
 	context = multiprocessing.get_context("spawn")
 	pool = context.Pool(processes=args.processes)#, maxtasksperchild=100)
@@ -393,7 +405,7 @@ if __name__ == "__main__":
 						pool.apply_async(make_pileup_rgb_minimizers, (read_count, cur_read, readqual, readlen, read_data, args,))
 			read_count += 1
 			if read_count % 1000 == 0 and args.verbose:
-				print('Finished pileups for ' + str(read_count) + ' lines')
+				echo('Finished pileups for ' + str(read_count) + ' lines')
 			if args.limit_reads > 0 and read_count >= args.limit_reads:
 				break
 			read_data, line_count = {}, 0
@@ -428,10 +440,10 @@ if __name__ == "__main__":
 					pool.apply_async(make_pileup_rgb_minimizers, (read_count, cur_read, readqual, readlen, read_data, args,))
 		read_count += 1
 		if read_count % 1000 == 0 and args.verbose:
-			print('Finished pileups for ' + str(read_count) + ' lines')	
+			echo('Finished pileups for ' + str(read_count) + ' lines')	
 
 	f.close()
 	pool.close()
 	pool.join()
-	print('Done')
+	print(''); echo('Done')
 #

@@ -1,10 +1,23 @@
-import argparse, gzip, re, sys
+import argparse, gzip, re, sys, time
+
+
+start = time.time()
+
+
+def echo(msg):
+	global start
+	seconds = time.time() - start
+	m, s = divmod(seconds, 60)
+	h, m = divmod(m, 60)
+	hms = "%02d:%02d:%02d" % (h, m, s)
+	print '['+hms+'] ' + msg
 
 
 def parse_args():  # handle user arguments
 	parser = argparse.ArgumentParser(description='Use cigar strings in sam files to compute percent identities.')
 	parser.add_argument('--amount', default=48, type=int, help='Number of bases/minimizers per label.')
 	parser.add_argument('--compression', default='none', choices=['none', 'gzip'], help='Compression format, or none')
+	parser.add_argument('--limit_length', default=0, type=int, help='Optionally do not label reads above a certain length.')
 	parser.add_argument('--limit_paf', default=0, type=int, help='Optionally limit the number of reads from paf file.')
 	parser.add_argument('--limit_sam', default=0, type=int, help='Optionally limit the number of reads from sam file.')
 	parser.add_argument('--mode', default='minimizers', choices=['minimizers', 'bases'], help='Labels for minimizers or bases.')
@@ -15,7 +28,7 @@ def parse_args():  # handle user arguments
 	return args
 
 
-def read_paf(fname, compression, limit):
+def read_paf(fname, compression, limit_paf, limit_length):
 	if compression == 'none':
 		paf = open(fname, 'r')
 	else:
@@ -26,12 +39,17 @@ def read_paf(fname, compression, limit):
 	for line in paf:
 		splits = line.strip().split('\t')
 		if splits[0] == splits[5]:  # read mapped against itself
-			minimizers[splits[0]] = [int(i) for i in splits[-1][5:].split(',')]
+			if limit_length > 0 and int(splits[1] > limit_length):
+				continue
+			if splits[-1][5] == 'I':
+				minimizers[splits[0]] = [int(i) for i in splits[-1][6:].split(',')]
+			else:
+				minimizers[splits[0]] = [int(i) for i in splits[-1][5:].split(',')]
 
 			linecount += 1
 			if linecount % 10000 == 0:
-				print 'Done reading ' + str(linecount) + ' lines from paf'
-			if limit > 0 and linecount % limit == 0:
+				echo('Done reading ' + str(linecount) + ' lines from paf')
+			if limit_paf > 0 and linecount % limit_paf == 0:
 				paf.close()
 				return minimizers
 
@@ -100,7 +118,8 @@ def main():
 
 	minimizers = {}
 	if args.mode == 'minimizers':
-		minimizers = read_paf(args.paf, args.compression, args.limit_paf)
+		echo('Reading paf file...')
+		minimizers = read_paf(args.paf, args.compression, args.limit_paf, args.limit_length)
 
 	if args.compression == 'none':
 		infile, outfile = open(args.sam, 'r'), open(args.outfile, 'w')
@@ -109,6 +128,7 @@ def main():
 
 	linecount = 0
 	res = []
+	echo('Reading sam file...')
 	for line in infile:
 		if line.startswith('@'):
 			continue
@@ -123,11 +143,12 @@ def main():
 
 		linecount += 1
 		if linecount % 10000 == 0:
-			print 'Done processing ' + str(linecount) + ' lines from sam'
+			echo('Done processing ' + str(linecount) + ' lines from sam')
 		if args.limit_sam > 0 and linecount % args.limit_sam == 0:
-			sys.exit()
+			break
 
 	infile.close(); outfile.close()
+	print''; echo('Done')
 
 
 if __name__ == '__main__':
