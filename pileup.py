@@ -88,14 +88,13 @@ def stretch_factor_minimizers(startpos, line, all_mins, selection, color='rgb'):
 			match_end = selection[13][selection[12].index(all_mins[endpos])]
 			stretch = (match_end - match_start) / (endpos - startpos)
 			return endpos, min(127.0, round(abs(stretch)*5))
-	#stretch = (selection[8] - match_start) / (len(line) - startpos)
-	return len(line), 0#min(255, round(abs(stretch)*10))
+	return len(line), 0
 
 
 def make_pileup_bw_whole(pid, readname, readqual, readlen, matches, args):
 	try: 
 		k = args.k
-		readqual = np.mean(readqual)  # TEMP
+		readqual = np.mean(readqual)
 		maxdepth, saveplots, plotdir, debug, pileup = args.maxdepth, args.saveplots, args.plotdir, args.debug, []
 		minimizers = matches[0][12]
 		del matches[0]
@@ -161,7 +160,6 @@ def make_pileup_bw_minimizers(pid, readname, readqual, readlen, matches, args):
 		maxdepth, saveplots, plotdir, pileup = args.maxdepth, args.saveplots, args.plotdir, []
 		minimizers = matches[0][12]
 		del matches[0]
-		#pileup.append([128.0 + readqual] * len(minimizers))  # the reference read
 		seq = [128.0 + ((minimizers[i+1] - minimizers[i])*5.0) for i in list(range(len(minimizers)-1))] + [128.0 + ((readlen - minimizers[-1])*5.0)]
 		pileup.append(seq)
 		for i in range(maxdepth):
@@ -243,7 +241,7 @@ def make_pileup_rgb_whole(pid, readname, readqual, readlen, matches, args):
 
 			pix = 0
 			while pix < len(seq):
-				if seq[pix][0] != 255.0 and seq[pix][2] != 0.0:# and (pix+1==len(seq) or seq[pix+1] != 255.0):
+				if seq[pix][0] != 255.0 and seq[pix][2] != 0.0:
 					endpos, stretch = stretch_factor_whole(pix, selection)
 					stretch = min(255.0, avg_stretch * (stretch ** 5))
 					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
@@ -304,7 +302,7 @@ def make_pileup_rgb_minimizers(pid, readname, readqual, readlen, matches, args):
 
 			pix = 0
 			while pix + 1 < len(seq):
-				if seq[pix][2] != 0.0:# and seq[pix+1][0] != 255.0 and (pix+1==len(seq) or seq[pix+1] != 255.0):
+				if seq[pix][2] != 0.0:
 					endpos, stretch = stretch_factor_minimizers(pix, seq, minimizers, selection)
 					seq[pix:endpos] = [[i[0], i[1], stretch] for i in seq[pix:endpos]]
 					if endpos <= pix:

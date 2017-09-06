@@ -13,7 +13,6 @@ Model adapted for regression and methods for generating
 '''
 
 
-#from __future__ import print_function
 from __future__ import absolute_import
 
 import argparse, glob, os, sys, time
@@ -76,49 +75,6 @@ def parseargs():
 	parser.add_argument('--window_size', type=int, default=200, help='Window size for VGG. Window >= segment size.')
 	args = parser.parse_args()
 	return args
-
-
-def preprocess_input(x, data_format=None):
-    if data_format is None:
-        data_format = K.image_data_format()
-    assert data_format in {'channels_last', 'channels_first'}
-
-    if data_format == 'channels_first':
-        # 'RGB'->'BGR'
-        x = x[:, ::-1, :, :]
-        # Zero-center by mean pixel
-        x[:, 0, :, :] -= 103.939
-        x[:, 1, :, :] -= 116.779
-        x[:, 2, :, :] -= 123.68
-    else:
-        # 'RGB'->'BGR'
-        x = x[:, :, :, ::-1]
-        # Zero-center by mean pixel
-        x[:, :, :, 0] -= 103.939
-        x[:, :, :, 1] -= 116.779
-        x[:, :, :, 2] -= 123.68
-    return x
-
-
-def decode_predictions(preds, top=5):
-    global CLASS_INDEX
-    if len(preds.shape) != 2 or preds.shape[1] != 1000:
-        raise ValueError('`decode_predictions` expects '
-                         'a batch of predictions '
-                         '(i.e. a 2D array of shape (samples, 1000)). '
-                         'Found array with shape: ' + str(preds.shape))
-    if CLASS_INDEX is None:
-        fpath = get_file('imagenet_class_index.json',
-                         CLASS_INDEX_PATH,
-                         cache_subdir='models')
-        CLASS_INDEX = json.load(open(fpath))
-    results = []
-    for pred in preds:
-        top_indices = pred.argsort()[-top:][::-1]
-        result = [tuple(CLASS_INDEX[str(i)]) + (pred[i],) for i in top_indices]
-        result.sort(key=lambda x: x[2], reverse=True)
-        results.append(result)
-    return results
 
 
 def _obtain_input_shape(input_shape, default_size, min_size, data_format, include_top):
@@ -275,9 +231,7 @@ def VGG16(include_top=True, weights='imagenet',
                               'your Keras config '
                               'at ~/.keras/keras.json.')
 
-    # we now strip off the old 1000 class layer and add a single relu output for regression
     # model.layers.pop()
-    #'''
     #x = Flatten(name='flatten')(model.layers[-1].output)
     #x = BatchNormalization()(x)
     x = Dense(4096, activation='relu', name='fc1')(model.layers[-1].output)#(x)
@@ -289,7 +243,6 @@ def VGG16(include_top=True, weights='imagenet',
         #x = BatchNormalization()(x)
         x = Dense(4096, activation='relu', name='fc'+str(i+3))(x)
         x = Dropout(0.5)(x)	
-    #'''
     #x = BatchNormalization()(x)
     if classify == -1.0:
     	x = Dense(1, activation='relu', name='predictions_new')(x)
@@ -337,15 +290,10 @@ def eval_preds_classify(actual, predicted, val, baseline=False):
 def eval_preds(actual, predicted, baseline=False):
 	if not baseline:
 		predicted = np.array([i[0] for i in predicted])
-	#print 'Actual:'
-	#print actual
-	#print '\nPredicted:'
-	#print predicted
-	#print
 	errors = [abs(actual[i]-predicted[i]) for i in range(len(actual))]
 	print 'Average error: ' + str(np.mean(errors))
 	mse = np.mean([i**2 for i in errors])
-	print 'Mean squared error: ' + str(mse)
+	print 'Mean squared error: ' + str(mse) + '\n'
 	percented, within1, within5, within10 = 100.0 / float(len(actual)), 0.0, 0.0, 0.0
 	for i in range(len(actual)):
 		if errors[i] < 0.01:
@@ -354,16 +302,13 @@ def eval_preds(actual, predicted, baseline=False):
 			within5 += percented
 		if errors[i] < 0.1:
 			within10 += percented
-	print
 	print str(within1) + ' percent of predictions within 1.0 of actual'
 	print str(within5) + ' percent of predictions within 5.0 of actual'
 	print str(within10) + ' percent of predictions within 10.0 of actual'		
 	print str(100.0 - within10) + ' percent of predictions outside 10.0 from actual'
-	print
-	print 'Pearson correlation: ' + str(pearsonr(actual, predicted)[0])
+	print '\nPearson correlation: ' + str(pearsonr(actual, predicted)[0])
 	print 'Spearman rank correlation: ' + str(spearmanr(actual, predicted)[0])
-	print
-	print 'Classification metrics for various cutoff thresholds:\n'
+	print '\nClassification metrics for various cutoff thresholds:\n'
 	cutoffs, df = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9], {}
 	for val in cutoffs:
 		tp, fp, tn, fn = 0.0, 0.0, 0.0, 0.0
@@ -491,7 +436,6 @@ def get_data(args, testing=False):
 		splits = line.strip().split(' ')
 		if len(splits) < 2:
 			continue
-		#labels_dict[splits[0]] = [float(i)/100.0 for i in splits[1].split(',')]
 		labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
 	labels_file.close()
 
@@ -513,14 +457,11 @@ def get_data(args, testing=False):
 
 
 def run_network(args, data, svmdata, labels, train_index, valid_index):
-	#vgg = VGG16(include_top=False, weights='imagenet', input_tensor=None, input_shape=data[0].shape, pooling='max')
 	vgg = VGG16(include_top=False, weights=None, input_tensor=None, input_shape=data[0].shape, pooling='max', extra=args.extra, classify=args.classify)
 	if args.classify == -1.0:
 		opt = optimizers.Adam(lr=0.0001)
-		vgg.compile(loss='mean_squared_error', optimizer=opt)  #, optimizer='adadelta')
-		#vgg.compile(loss='mean_squared_error', optimizer='adadelta')
+		vgg.compile(loss='mean_squared_error', optimizer=opt)
 	else:
-		#opt = optimizers.Adadelta(lr=0.1)
 		opt = optimizers.Adam(lr=0.00001)
 		vgg.compile(loss='binary_crossentropy', optimizer=opt)
 	echo('Fitting model...')
@@ -589,8 +530,8 @@ def main():
 	args = parseargs()
 	if not args.input.endswith('/'):
 		args.input += '/'
-	if not (args.window_size >= args.segment_size):# and args.segment_size % 100 == 0):
-		print 'Error: window size must be >= segment size.'#' and segment size % 100 must = 0.'
+	if not (args.window_size >= args.segment_size):
+		print 'Error: window size must be >= segment size.'
 		sys.exit()
 	if args.classify != -1.0 and (args.classify < 0.0 or args.classify > 1.0):
 		print 'Error: Classification threshold must be a value from 0.0 to 1.0'

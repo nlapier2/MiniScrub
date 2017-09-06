@@ -79,10 +79,6 @@ def process_images(args, labels_dict, testing=False):
 				label = imlabels[i]
 				labels.append(label)
 			data.append(window)
-			'''if imname in locations:
-				locations[imname].append(str(startpos)+'-'+str(endpos))
-			else:
-				locations[imname] = [str(startpos)+'-'+str(endpos)]'''
 			locations.append(str(imname)+' | '+str(startpos)+' | '+str(endpos))
 		endpoints.append(len(data))
 		if args.debug > 0 and len(endpoints) >= args.debug:
@@ -106,7 +102,6 @@ def get_data(args, testing=False):
 			splits = line.strip().split(' ')
 			if len(splits) < 2:
 				continue
-			#labels_dict[splits[0]] = [float(i)/100.0 for i in splits[1].split(',')]
 			labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
 		labels_file.close()
 
@@ -115,15 +110,10 @@ def get_data(args, testing=False):
 
 
 def eval_preds(actual, predicted, baseline=False):
-	#print 'Actual:'
-	#print actual
-	#print '\nPredicted:'
-	#print predicted
-	#print
 	errors = [abs(actual[i]-predicted[i]) for i in range(len(actual))]
 	print 'Average error: ' + str(np.mean(errors))
 	mse = np.mean([i**2 for i in errors])
-	print 'Mean squared error: ' + str(mse)
+	print 'Mean squared error: ' + str(mse) + '\n'
 	percented, within1, within5, within10 = 100.0 / float(len(actual)), 0.0, 0.0, 0.0
 	for i in range(len(actual)):
 		if errors[i] < 0.01:
@@ -132,16 +122,13 @@ def eval_preds(actual, predicted, baseline=False):
 			within5 += percented
 		if errors[i] < 0.1:
 			within10 += percented
-	print
 	print str(within1) + ' percent of predictions within 1.0 of actual'
 	print str(within5) + ' percent of predictions within 5.0 of actual'
 	print str(within10) + ' percent of predictions within 10.0 of actual'		
 	print str(100.0 - within10) + ' percent of predictions outside 10.0 from actual'
-	print
-	print 'Pearson correlation: ' + str(pearsonr(actual, predicted)[0])
+	print '\nPearson correlation: ' + str(pearsonr(actual, predicted)[0])
 	print 'Spearman rank correlation: ' + str(spearmanr(actual, predicted)[0])
-	print
-	print 'Classification metrics for various cutoff thresholds:\n'
+	print '\nClassification metrics for various cutoff thresholds:\n'
 	cutoffs, df = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9], {}
 	for val in cutoffs:
 		tp, fp, tn, fn = 0.0, 0.0, 0.0, 0.0
