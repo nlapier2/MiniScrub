@@ -1,0 +1,20 @@
+#Example run lines
+
+##### Pileup for 5000 reads, all reads matched against
+time python pileup.py --color rgb --compression gzip -k 13 --limit_reads 5000 --mapping data/x0124-EcoliSkoreensis/x0124-mappings-w3-k13.paf.gz --mode whole --plotdir sample/x0124-EcoliSkoreensis/w3-k13/rgb-whole/ --processes 16 --reads data/x0124-EcoliSkoreensis/x0124-reads.fastq.gz --saveplots --verbose
+
+##### Pileup in debug mode (pileup for 10 reads, 10000 reads matched against)
+time python pileup.py --color rgb --compression gzip --debug -k 13 --mapping data/x0124-EcoliSkoreensis/x0124-mappings-w3-k13.paf.gz --mode whole --plotdir test/plots/ --processes 1 --reads data/x0124-EcoliSkoreensis/x0124-reads.fastq.gz --saveplots --verbose
+
+##### VGG in debug mode using only 100 images for 10 epochs
+time python vgg.py --debug 100 --epochs 10 --extra 0 --input sample/x0125-Mock26/w3-k13-h48/rgb-whole/ --labels data/x0125-Mock26/x0125-labels-bases-100.txt --segment_size 100 --window_size 200 --baseline
+
+##### Same as above, but savign the model and also running and saving an SVM baseline for comparison
+time python vgg.py --debug 100 --epochs 10 --extra 0 --input sample/x0124-EcoliSkoreensis/w3-k13-h24/rgb-whole/ --labels data/x0124-EcoliSkoreensis/x0124-labels-bases-100.txt --segment_size 100 --window_size 200 --output models/x0124-w5-k15-rgb-whole-n2560-e10-regr.hd5 --baseline --outputsvm models/svm-x0124-rgb-whole-n2560-regr.pkl 
+
+##### Load and test an existing saved Keras model  
+time python vgg.py --debug 100 --load models/x0125-w3-k13-rgb-whole-n1000i-e20-regr.hd5 --test_input sample/x0124-EcoliSkoreensis/w3-k13-h48/rgb-whole/ --test_labels data/x0124-EcoliSkoreensis/x0124-labels-bases-100.txt
+
+##### Generate labels for every 100 bases from a SAM file
+time python cigarToPctId.py --amount 100 --compression gzip --mode bases --outfile x0125-labels-bases-100.txt --paf data/x0125-Mock26/x0125-mappings-w5-k15.paf.gz --sam data/x0125-Mock26/x0125-graphmapped-reads.sam.gz
+
