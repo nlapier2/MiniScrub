@@ -18,3 +18,12 @@ time python vgg.py --debug 100 --load models/x0125-w3-k13-rgb-whole-n1000i-e20-r
 ##### Generate labels for every 100 bases from a SAM file
 time python cigarToPctId.py --amount 100 --compression gzip --mode bases --outfile x0125-labels-bases-100.txt --paf data/x0125-Mock26/x0125-mappings-w5-k15.paf.gz --sam data/x0125-Mock26/x0125-graphmapped-reads.sam.gz
 
+##### Miniscrub testing predicted cuts with loaded model and given labels (same as VGG testing option) (debug mode)
+time python miniscrub.py --compression gzip --debug 100 --input sample/x0124-EcoliSkoreensis/w5-k15-h24/rgb-minimizers/ --labels data/x0124-EcoliSkoreensis/x0124-labels-minimizers-w5-k15-48.txt --load models/x0124-w5-k15-h24-seg48-win72-rgb-minimizers-n25000i-e10-regr.hd5 --segment_size 48 --window_size 72
+
+##### Miniscrub output some statistics without scrubbing reads (debug and minimizer modes)
+time python miniscrub.py --compression gzip --debug 100 --input sample/x0124-EcoliSkoreensis/w5-k15-h24/rgb-minimizers/ --load models/x0124-w5-k15-h24-seg48-win72-rgb-minimizers-n25000i-e10-regr.hd5 --min_length 500 --segment_size 48 --window_size 72 --mode minimizers --paf data/x0124-EcoliSkoreensis/x0124-mappings-w5-k15.paf.gz --limit_paf 10000 --limit_length 80000
+
+##### Miniscrub performing read scrubbing (debug and minimizer modes)
+time python miniscrub.py --compression gzip --cutoff 0.75 --debug 100 --input sample/x0124-EcoliSkoreensis/w5-k15-h24/rgb-minimizers/ --load models/x0124-w5-k15-h24-seg48-win72-rgb-minimizers-n25000i-e10-regr.hd5 --min_length 500 --output scrubbed-reads.fastq --reads data/x0124-EcoliSkoreensis/x0124-reads.fastq.gz --segment_size 48 --window_size 72 --mode minimizers --paf data/x0124-EcoliSkoreensis/x0124-mappings-w5-k15.paf.gz --limit_paf 10000 --limit_length 80000
+
