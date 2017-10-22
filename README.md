@@ -1,6 +1,6 @@
 # MiniScrub: *de novo* long read scrubbing using approximate alignment and deep learning
 
-Current version: 0.2 | September 8, 2017
+Current version: 0.3 | October 22, 2017
 
 Note: this README is just a short introduction to MiniScrub. For documentation, please see: MiniScrub-Documentation.pdf
 

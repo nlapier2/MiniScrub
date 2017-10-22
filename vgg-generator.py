@@ -369,8 +369,11 @@ def eval_preds(args, actual, predicted, baseline=False):
 		plt.plot(np.arange(0.5,1.0,0.01), np.arange(0.5,1.0,0.01),'k--')  # dashed diagonal line
 		plt.savefig(args.plot, dpi=1000)
 
-def process_images(args, labels_dict):
+
+def process_images(args, labels_dict, generating=False):
+	names = []
 	data, svmdata, labels, endpoints = [], [], [], []  # endpoints is position where full reads end
+	segments = 0
 	for fname in glob.glob(args.input+'*.png'):
 		imname = fname.split('/')[-1][:-4]
 		if imname not in labels_dict:
@@ -398,6 +401,8 @@ def process_images(args, labels_dict):
 		if empty:  # ignore reads with no matching reads
 			continue
 
+		names.append(fname)
+
 		# break read into windows, excluding junk 0s at the ends
 		sidelen = (args.window_size - args.segment_size) / 2  # extra space on each side of segment in window
 		blanks = [[0,0,0]] * ((48 - args.window_size) / 2)
@@ -408,6 +413,22 @@ def process_images(args, labels_dict):
 			if endpos > len(imarray[0]):
 				break
 			window = imarray[:,startpos:endpos]
+
+			if args.baseline:
+				vec, counts = [], 0
+				for col in range(len(window[0])):
+					counts = 0
+					for row in range(len(window)):
+						if window[row][col][0] > 128.0:
+							counts += 1
+					vec.append(counts)
+				svmdata.append(vec)
+
+			if generating == True:
+				segments += 1
+				label = imlabels[i]
+				labels.append(label)
+				continue
 			
 			if len(blanks) > 0:
 				window = list(window)
@@ -422,20 +443,11 @@ def process_images(args, labels_dict):
 				window = np.concatenate((window, blankrows), axis=0)
 			data.append(window)
 			labels.append(label)
-			if args.baseline:
-				vec, counts = [], 0
-				for col in range(len(window[0])):
-					counts = 0
-					for row in range(len(window)):
-						if window[row][col][0] > 128.0:
-							counts += 1
-					vec.append(counts)
-				svmdata.append(vec)
-		endpoints.append(len(data))
+		endpoints.append(len(labels))
 		if args.debug > 0 and len(endpoints) >= args.debug:
 			break
 
-	if len(data) == 0 or len(labels) == 0:
+	if len(labels) == 0:
 		print 'Error: no data found.'
 		sys.exit()
 
@@ -448,10 +460,14 @@ def process_images(args, labels_dict):
 				labels[i] = 0.0
 			else:
 				labels[i] = 1.0
-	return data, svmdata, labels, endpoints
+	if not generating:
+		segments = len(data)
+	#print names[int(0.8*len(endpoints)):]
+	#print('Process images test: ', str(len(names[int(0.8*len(endpoints)):])))
+	return data, svmdata, labels, endpoints, segments
 
 
-def get_data(args, testing=False):
+def get_data(args, testing=False, generating=False):
 	if testing == True:  # get data for the test images provided
 		args.labels = args.test_labels
 		args.input = args.test_input
@@ -465,11 +481,11 @@ def get_data(args, testing=False):
 		labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
 	labels_file.close()
 
-	data, svmdata, labels, endpoints = process_images(args, labels_dict)
+	data, svmdata, labels, endpoints, segments = process_images(args, labels_dict, generating)
 
 	# we set the indices to split the data into train/validation/test
 	# and round these up to the end of the nearest read to prevent overfitting
-	train_index, valid_index = int(0.6*len(data)), int(0.8*len(data))
+	'''train_index, valid_index = int(0.6*segments), int(0.8*segments)
 	for point in endpoints:
 		if point >= train_index:
 			train_index = point
@@ -477,7 +493,10 @@ def get_data(args, testing=False):
 	for point in endpoints:
 		if point >= valid_index:
 			valid_index = point
-			break
+			break'''
+	train_index, valid_index = endpoints[int(0.6*len(endpoints))], endpoints[int(0.8*len(endpoints))]
+	#print(endpoints, len(endpoints), len(labels))
+	#print(train_index, valid_index)
 
 	return data, svmdata, labels, train_index, valid_index
 
@@ -553,8 +572,6 @@ def load_and_test(args):
 
 
 def setup_generator(args):  # creates train/valid/test sets from filenames, and dict mapping reads to labels
-	fnames = sorted(glob.glob(args.input+'*.png'))
-	train_index, valid_index = int(0.6*len(fnames)), int(0.8*len(fnames))
 	labels_dict = {}
 	labels_file = open(args.labels, 'r')
 	for line in labels_file:
@@ -563,7 +580,69 @@ def setup_generator(args):  # creates train/valid/test sets from filenames, and 
 			continue
 		labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
 	labels_file.close()
-	return fnames[:train_index], fnames[train_index:valid_index], fnames[valid_index:], labels_dict
+
+	names, labels, endpoints = [], [], []  # endpoints is position where full reads end
+	segments = 0
+	for fname in glob.glob(args.input+'*.png'):
+		imname = fname.split('/')[-1][:-4]
+		if imname not in labels_dict:
+			continue
+		imlabels = labels_dict[imname]
+		zero_segments, pos = [1, 1], 0
+		for i in imlabels:  # here we determine the 0 identity segments on the end of reads, which are junk
+			if i == 0:
+				zero_segments[pos] += 1
+			else:
+				pos=1
+		imarray = ndimage.imread(fname, mode='RGB')
+
+		empty, emptycount = True, 0
+		for i in range(1, len(imarray)):
+			for pix in imarray[i]:
+				for val in pix:
+					if val != 0.0:
+						empty = False
+						break
+				if empty == False:
+					break
+			if empty == False:
+				break
+		if empty:  # ignore reads with no matching reads
+			continue
+		names.append(fname)
+
+		# break read into windows, excluding junk 0s at the ends
+		sidelen = (args.window_size - args.segment_size) / 2  # extra space on each side of segment in window
+		blanks = [[0,0,0]] * ((48 - args.window_size) / 2)
+		for i in range(zero_segments[0], len(imlabels)-zero_segments[1]):
+			startpos, endpos = (i*args.segment_size)-sidelen, ((i+1)*args.segment_size)+sidelen
+			if startpos < 0:
+				continue
+			if endpos > len(imarray[0]):
+				break
+			window = imarray[:,startpos:endpos]
+			segments += 1
+			labels.append(imlabels[i])
+
+		endpoints.append(len(labels))
+		if args.debug > 0 and len(names) >= args.debug:
+			break
+
+	if len(labels) == 0:
+		print 'Error: no data found.'
+		sys.exit()
+
+	labels = np.array(labels)
+	if args.classify != -1.0:
+		for i in range(len(labels)):
+			if labels[i] < args.classify:
+				labels[i] = 0.0
+			else:
+				labels[i] = 1.0
+
+	train_index, valid_index = endpoints[int(0.6*len(endpoints))], endpoints[int(0.8*len(names))-1]
+	train, valid, test = names[:int(0.6*len(names))], names[int(0.6*len(names)):int(0.8*len(names))], names[int(0.8*len(names)):]
+	return train, valid, test, train_index, valid_index, labels_dict, labels
 
 
 def generate_batches(args, filenames, labels_dict, batch_size):
@@ -633,20 +712,37 @@ def generate_batches(args, filenames, labels_dict, batch_size):
 				print 'Error: no data found.'
 				sys.exit()
 
+		if len(data) != 0:  # send remainder batch to the neural network
+			if args.classify != -1.0:
+				labels = [1.0 if i >= args.classify else 0.0 for i in labels]
+			yield np.array(data), np.array(labels)
+			yielded = True
+			data, labels = [], []
+
 
 def run_network_generator(args):
-	train, valid, test, labels_dict = setup_generator(args)
-	vgg = VGG16(include_top=False, weights=None, input_tensor=None, input_shape=data[0].shape, pooling='max', extra=args.extra, classify=args.classify)
+	echo('Setting up generator...')
+	train, valid, test, train_index, valid_index, labels_dict, labels = setup_generator(args)
+	#print(test)
+	#print('Generator test: ', str(len(test)))
+	vgg = VGG16(include_top=False, weights=None, input_tensor=None, input_shape=(48,args.window_size,3), pooling='max', extra=args.extra, classify=args.classify)
 	if args.classify == -1.0:
 		opt = optimizers.Adam(lr=0.0001)
 		vgg.compile(loss='mean_squared_error', optimizer=opt)
 	else:
 		opt = optimizers.Adam(lr=0.00001)
 		vgg.compile(loss='binary_crossentropy', optimizer=opt)
+
+	#echo('Determining number of batches...')
+	#data, svmdata, labels, train_index, valid_index = get_data(args, generating=True)
+
 	echo('Fitting model...')
-	vgg.fit_generator(generate_batches(args, train, labels_dict, 64), steps_per_epoch=int(len(train)/64), epochs=args.epochs, validation_data=generate_batches(args, valid, labels_dict, 64), validation_steps=int(len(valid)/64))
+	vgg.fit_generator(generate_batches(args, train, labels_dict, 64), steps_per_epoch=int(train_index/64)+1, epochs=args.epochs, validation_data=generate_batches(args, valid, labels_dict, 64), validation_steps=int((valid_index-train_index)/64)+1)
 	print '\n'; echo('Predicting...')
-	predictions = vgg.predict_generator(generate_batches(args, test, labels_dict, 64))
+	predictions = vgg.predict_generator(generate_batches(args, test, labels_dict, 64), int((len(labels)-valid_index)/64)+1)
+
+	print(len(predictions), len(labels[valid_index:]), len(labels))
+
 	if args.classify == -1.0:
 		eval_preds(args, labels[valid_index:], predictions)
 	else:
@@ -675,13 +771,16 @@ def main():
 		print 'Error: segment_size and window_size must be even.'
 
 	if args.load == 'NONE' and args.loadsvm == 'NONE':
-		echo('Gathering input data...')
-		data, svmdata, labels, train_index, valid_index = get_data(args)
-		if len(data[:train_index]) == 0 or len(data[train_index:valid_index]) == 0 or len(data[valid_index:]) == 0:
-			print 'Not enough input images for train/validation/test split. Use more data.'
-			sys.exit()
-		echo('Data gathering complete. Compiling CNN model...')
-		run_network(args, data, svmdata, labels, train_index, valid_index)
+		if args.streaming:
+			run_network_generator(args)
+		else:
+			echo('Gathering input data...')
+			data, svmdata, labels, train_index, valid_index = get_data(args)
+			if len(data[:train_index]) == 0 or len(data[train_index:valid_index]) == 0 or len(data[valid_index:]) == 0:
+				print 'Not enough input images for train/validation/test split. Use more data.'
+				sys.exit()
+			echo('Data gathering complete. Compiling CNN model...')
+			run_network(args, data, svmdata, labels, train_index, valid_index)
 	else:
 		load_and_test(args)
 	print ''; echo('Done')

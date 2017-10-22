@@ -39,6 +39,7 @@ def parseargs():
 	parser.add_argument('--paf', default='NONE', help='Path to paf file; required if --mode=minimizers and --reads is specified.')
 	parser.add_argument('--reads', default='NONE', help='Path to reads file. Default: do not trim (output statsitics instead).')
 	parser.add_argument('--segment_size', default=48, type=int, help='Neural net segment size to predict. Keep as default unless network retrained.')
+	parser.add_argument('--streaming', action='store_true', help='Streaming loading of images to reduce memory footprint.')
 	parser.add_argument('--window_size', default=72, type=int, help='Neural net window size to predict. Keep as default unless network retrained.')
 	args = parser.parse_args()
 	return args
@@ -55,12 +56,12 @@ def read_paf(fname, compression, limit_paf, limit_length):
 	for line in paf:
 		splits = line.strip().split('\t')
 		if splits[0] == splits[5]:  # read mapped against itself
-			if limit_length > 0 and int(splits[1]) > limit_length:
+			if splits[0] in minimizers or (limit_length > 0 and int(splits[1]) > limit_length):
 				continue
-			if splits[-1][5] == 'I':
-				minimizers[splits[0]] = [int(i) for i in splits[-1][6:].split(',')]
+			if splits[-2][5] == 'I':
+				minimizers[splits[0]] = [int(i) for i in splits[-2][6:].split(',')]
 			else:
-				minimizers[splits[0]] = [int(i) for i in splits[-1][5:].split(',')]
+				minimizers[splits[0]] = [int(i) for i in splits[-2][5:].split(',')]
 
 			linecount += 1
 			if linecount % 10000 == 0:
@@ -73,9 +74,11 @@ def read_paf(fname, compression, limit_paf, limit_length):
 	return minimizers
 
 
-def process_images(args, labels_dict, testing=False):
+def process_images(args, labels_dict, testing=False, fnames=None):
 	data, svmdata, labels, locations, endpoints = [], [], [], [], []  # endpoints is position where full reads end
-	for fname in glob.glob(args.input+'*.png'):
+	if fnames == None:
+		fnames = glob.glob(args.input+'*.png')
+	for fname in fnames:
 		imname = fname.split('/')[-1][:-4]
 		zero_segments, pos = [1, 1], 0
 		if testing == True and imname not in labels_dict:
@@ -115,7 +118,7 @@ def process_images(args, labels_dict, testing=False):
 				label = imlabels[i]
 				labels.append(label)
 			data.append(window)
-			locations.append(str(imname)+' | '+str(startpos)+' | '+str(endpos-1))
+			locations.append(str(imname)+' | '+str(startpos+sidelen)+' | '+str(endpos-sidelen-1))
 		endpoints.append(len(data))
 		if args.debug > 0 and len(endpoints) >= args.debug:
 			break
@@ -130,7 +133,7 @@ def process_images(args, labels_dict, testing=False):
 	return data, svmdata, labels, endpoints, locations
 
 
-def get_data(args, testing=False):
+def get_data(args, testing=False, fnames=None):
 	labels_dict = {}
 	if testing == True:
 		labels_file = open(args.labels, 'r')
@@ -141,7 +144,7 @@ def get_data(args, testing=False):
 			labels_dict[splits[0]] = [float(i) for i in splits[1].split(',')]
 		labels_file.close()
 
-	data, svmdata, labels, endpoints, locations = process_images(args, labels_dict, testing)
+	data, svmdata, labels, endpoints, locations = process_images(args, labels_dict, testing, fnames)
 	return data, svmdata, labels, locations
 
 
@@ -200,17 +203,38 @@ def eval_preds(actual, predicted, baseline=False):
 
 
 def load_and_test(args):
-	echo('Processing input images...')
-	if args.labels != 'NONE':
-		data, svmdata, labels, locations = get_data(args, testing=True)
-	else:
-		data, svmdata, labels, locations = get_data(args, testing=False)
+	if not args.streaming:
+		echo('Processing input images...')
+		if args.labels != 'NONE':
+			data, svmdata, labels, locations = get_data(args, testing=True)
+		else:
+			data, svmdata, labels, locations = get_data(args, testing=False)
 
-	echo('Loading model...')
-	model = load_model(args.load)
-	echo('Model loaded successfully. Predicting...')
-	predictions = model.predict(data, batch_size=64)
-	predictions = np.array([i[0] for i in predictions])
+		echo('Loading model...')
+		model = load_model(args.load)
+		echo('Model loaded successfully. Predicting...')
+		predictions = model.predict(data, batch_size=64)
+		predictions = np.array([i[0] for i in predictions])
+	else:
+		fnames = glob.glob(args.input+'*.png')
+		if args.debug > 0:
+			fnames = fnames[:args.debug]
+		counter, predictions, locations = 0, [], []
+		echo('Loading model...')
+		model = load_model(args.load)
+		echo('Model loaded successfully. Predicting...')
+		while counter < len(fnames):
+			batch = fnames[counter:counter+100]
+			if args.labels != 'NONE':
+				data, svmdata, labels, locs = get_data(args, testing=True, fnames=batch)
+			else:
+				data, svmdata, labels, locs = get_data(args, testing=False, fnames=batch)
+			locations.extend(locs)
+			
+			preds = model.predict(data, batch_size=64)
+			preds = np.array([i[0] for i in preds])
+			predictions.extend(preds)
+			counter += 100
 
 	if args.labels != 'NONE':
 		echo('Evaluating predictions on provided labels...')
@@ -229,7 +253,12 @@ def locate_predictions(predictions, locations, minimizers):
 			deletions += 1
 			continue
 		elif minimizers != {}:
-			start, end = minimizers[name][start], minimizers[name][end]
+			try:
+				start, end = minimizers[name][start], minimizers[name][end]
+			except:
+				print minimizers[name]
+				print name, start, end, len(minimizers[name])
+				sys.exit()
 		if name not in pred_locs:
 			pred_locs[name] = [[predictions[loc], start, end]]
 		else:
@@ -263,20 +292,20 @@ def output_statistics(args, predictions, pred_locs):
 
 
 def scrub_read(args, read, pred_locs, cutoff):
-	scrubbed_reads, locs = [''], [[0, 0]]
+	scrubbed_reads, locs = [''], [[-1, -1]]
 	if len(scrubbed_reads[0]) < pred_locs[0][1]:
 		scrubbed_reads[0] = read[:pred_locs[0][1]]
-		locs[0][1] = pred_locs[0][1]
+		locs[0] = [0, pred_locs[0][1]]
 	for i in range(len(pred_locs)):
 		pred, start, end = pred_locs[i]
 		if pred > cutoff:
 			scrubbed_reads[-1] += read[start:end]
-			if locs[-1][0] == 0:
+			if locs[-1][0] == -1:
 				locs[-1][0] = start
 			locs[-1][1] = end
 		else:
 			scrubbed_reads.append('')
-			locs.append([0, 0])
+			locs.append([-1, -1])
 	if len(read) > pred_locs[-1][2]:
 		scrubbed_reads[-1] += read[pred_locs[-1][2]:]
 		if locs[-1][0] == 0:
