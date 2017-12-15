@@ -3,6 +3,7 @@
 Current version: 0.3 | October 22, 2017
 
 Note: this README is just a short introduction to MiniScrub. For documentation, please see: MiniScrub-Documentation.pdf
+Note: see legal.txt and license.txt for legal and license information, respectively. The license is a modified version of the BSD license.
 
 MiniScrub is a tool for *de novo* scrubbing, or trimming, low-quality parts of long reads. The rationale is that long reads are more informative than short reads, but most current technologies have high error rates, with low-quality segments within many reads.
 
